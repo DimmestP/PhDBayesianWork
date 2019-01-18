@@ -1,0 +1,37 @@
+---
+title: "Lognormal Vs NegBinomial Differential Expression"
+author: "Samuel Joseph Haynes"
+date: "17/01/2019"
+output: html_document
+---
+
+```{r setup}
+chosenRNABatchSize <- 10
+```
+
+```{r produceLognormalSample}
+simulatedLnormWildTypeCounts <- matrix(nrow=chosenRNABatchSize,ncol=48)
+for(i in 1:chosenRNABatchSize) for(j in 1:48){
+  wildTypeMu <- sample(lognormalAlpha[,1,j],1) * sample(lognormalMu[,1,i],1)
+  simulatedLnormWildTypeCounts[i,j] <- rlnorm(1,wildTypeMu,sample(lognormalSigma[,1,i],1,replace=TRUE))
+}
+
+ simulatedLnormMutantCounts <- matrix(nrow=chosenRNABatchSize,ncol=48)
+for(i in 1:chosenRNABatchSize) for(j in 1:48){
+  mutantMu <- sample(lognormalAlpha[,2,j],1) * sample(lognormalMu[,2,i],1)
+  simulatedLnormMutantCounts[i,j] <- rlnorm(1,mutantMu,sample(lognormalSigma[,2,i],1,replace=TRUE))}
+```
+
+```{r produceNegativeBinomialSample}
+simulatedNegBinWildTypeCounts <- matrix(nrow=chosenRNABatchSize,ncol=48)
+for(i in 1:chosenRNABatchSize) for(j in 1:48)simulatedNegBinWildTypeCounts[i,j] <- rpois(1,sample(negBinomialLambdas[,1,j,i],1))
+
+simulatedNegBinMutantCounts <- matrix(nrow=chosenRNABatchSize,ncol=48)
+for(i in 1:chosenRNABatchSize) for(j in 1:48)simulatedNegBinMutantCounts[i,j] <- rpois(1,sample(negBinomialLambdas[,2,j,i],1))
+```
+
+```{r differentialExpressionCalc}
+negBinDiff <- simulatedNegBinWildTypeCounts - simulatedNegBinMutantCounts
+lnormDiff <- simulatedLnormWildTypeCounts - simulatedLnormMutantCounts
+
+```

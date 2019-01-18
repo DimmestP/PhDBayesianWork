@@ -1,0 +1,196 @@
+---
+title: "2FracCountsModel"
+author: "Samuel Joseph Haynes"
+date: "07/01/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r setupLibaries}
+setupLibraries <- function(){
+  library(reshape2)
+  library(rstan)
+  rstan_options(auto_write = TRUE)
+  options(mc.cores = parallel::detectCores())
+  library(tidyverse)
+  library(cowplot)
+  library(ggmcmc)
+  library(shinystan)
+  library(bayesplot)
+}
+```
+
+```{r importLogNormalData}
+setupLibraries()
+# The wild type data needs to be extracted from its various files and imported into a R variable
+wildTypeFileNames <- list.files("~/Documents/WallaceLab/preChristmas2018Work/code/RNAFracQuant/intoTheWild/notebook/schurchDataSet/wildType", full.names=TRUE)
+mutantFileNames <- list.files("~/Documents/WallaceLab/preChristmas2018Work/code/RNAFracQuant/intoTheWild/notebook/schurchDataSet/snf2Mutant", full.names=TRUE)
+wildTypeData <- lapply(wildTypeFileNames,read.table)
+mutantData <- lapply(mutantFileNames,read.table)
+```
+
+```{r mergeData}
+# Merge replicates into same dataframe
+combinedWildTypeData <- wildTypeData[[1]]
+combinedMutantData <- mutantData[[1]]
+for(i in 2:48){
+  combinedWildTypeData <- merge(combinedWildTypeData,wildTypeData[[i]],by="V1") # replicates are merged horizontally by introducing new columns
+  combinedMutantData <- merge(combinedMutantData,mutantData[[i]],by="V1")
+}
+```
+
+```{r colNameData}
+# Give combinedWildTypeData columns suitable names
+columnNames <- vector(mode="character", length=49)
+columnNames[1] <- "transcriptName" 
+for(i in 1:48) columnNames[i+1] <- paste0("Replicate_",i)
+colnames(combinedWildTypeData) <- columnNames
+colnames(combinedMutantData) <- columnNames
+```
+
+```{r cleanWildData}
+# Remove any consistantly low count data
+library(magrittr) # pipe R package
+library(tidyverse) # dataframe manipulation package
+usableWildTranscripts <- 
+    combinedWildTypeData %>%
+      reshape::melt(id="transcriptName") %>%
+        group_by(transcriptName) %>%
+          summarise(sufficientCounts = sum(value > 5),keep=(sufficientCounts==48)) %>%
+            filter(keep) %$%
+              transcriptName
+usableMutantTranscripts <- 
+    combinedMutantData %>%
+      reshape::melt(id="transcriptName") %>%
+        group_by(transcriptName) %>%
+          summarise(sufficientCounts = sum(value > 5),keep=(sufficientCounts==48)) %>%
+            filter(keep) %$%
+              transcriptName
+cleanWildTypeData <- 
+    combinedWildTypeData %>%
+      ungroup() %>%
+        filter(transcriptName %in% usableWildTranscripts) %>%
+          filter(transcriptName %in% usableMutantTranscripts)
+
+cleanMutantData <- 
+    combinedMutantData %>%
+      ungroup() %>%
+        filter(transcriptName %in% usableWildTranscripts) %>%
+          filter(transcriptName %in% usableMutantTranscripts)
+```
+
+```{r lognormalPoissonStanModel}
+setupLibraries()
+# Create Stan model
+buildLognormalPoissonModel <- function(stan_data) {
+    stan(model_code='// -*- mode: C -*-
+data {
+  // Number of RNAs transcipts searched for
+  int<lower=1> NRNA;     
+  
+  // Array of integers for the counts data
+  // for each transcript for each sample
+  int<lower=0> counts[NRNA,48,2];
+}
+parameters {
+  vector<lower=0>[NRNA] mu[2];
+
+  // scale factor accounting for differing total RNA counts
+  real <lower=0> alpha[2,48];
+  
+  // dispersion parameter for counts
+  vector<lower=0>[NRNA] sigma[2]; // must explicitly state support of priors, i.e. upper and lower bounds, otherwise samplier does not act as expected!!!
+
+  // poisson rate parameter
+  vector<lower=0> [NRNA] lambda[2,48];
+}
+model{
+  // scale factor prior; one for each condition
+  for(i in 1:2) for(j in 1:48) alpha[i,j] ~ gamma(1,1);
+  // conjugate prior for means; one for each gene and condition
+  for(j in 1:NRNA) for(i in 1:2) mu[i,j] ~ gamma(1,1);
+  // Cauchy prior for lognormal dispersion parameter; one for each gene and condition
+  for(j in 1:NRNA) for(i in 1:2) sigma[i,j] ~ cauchy(0,3);
+
+  for(i in 1:2) for(k in 1:NRNA) for(j in 1:48){
+    lambda[i,j,k] ~ gamma(alpha[i,j]*mu[i,k],sigma[i,k]);
+  }
+  // across both conditions, all genes and duplicates
+  for(i in 1:2) for(k in 1:NRNA) for(j in 1:48)  {
+     counts[k,j,i] ~ poisson(lambda[i,j,k]);
+}
+
+}
+',
+data=stan_data,chains = 1,iter = 10)
+    }
+```
+
+```{r buildLnormModel}
+# Format data and test stan model
+chosenRNABatchSize = 10;
+setupLibraries()
+stanData <- list(NRNA = chosenRNABatchSize,counts = array(c(c(as.matrix(cleanWildTypeData[1:chosenRNABatchSize,2:49])),c(as.matrix(cleanMutantData[1:chosenRNABatchSize,2:49]))), dim = c(chosenRNABatchSize,48,2))) # Strange manipulation to merge multi-matrix count data into a single array
+lognormalPoissonModel <- buildLognormalPoissonModel(stanData)
+```
+
+```{r runLnormPoisson}
+# Once test build is complete, run model properly
+lognormalPoissonStanFit <- stan(data = stanData,iter = 1000, fit =  lognormalPoissonModel, chains = 4)
+```
+
+```{r mcmcChecks}
+parameters <- rstan::extract(lognormalPoissonStanFit)
+hist(parameters$sigma)
+hist(parameters$mu)
+ggsave("mcmcTraceplot.pdf",plot=traceplot(lognormalPoissonStanFit))
+available_mcmc(pattern = "_nuts_")
+lp_cp <- log_posterior(lognormalPoissonStanFit)
+np_cp <- nuts_params(lognormalPoissonStanFit)
+mcmc_nuts_divergence(np_cp, lp_cp, chain = 4)
+```
+
+```{r postPosteriorChecks}
+# simulate the transcript count data from the inferred lognormal parameters
+simulatedWildTypeCounts <- matrix(nrow=chosenRNABatchSize,ncol=48)
+for(i in 1:chosenRNABatchSize) for(j in 1:48)simulatedWildTypeCounts[i,j] <- rpois(1,sample(parameters$lambda[,1,j,i],1))
+simulatedWildTypeCounts
+
+simulatedMutantCounts <- matrix(nrow=chosenRNABatchSize,ncol=48)
+for(i in 1:chosenRNABatchSize) for(j in 1:48)simulatedMutantCounts[i,j] <- rpois(1,sample(parameters$lambda[,2,j,i],1))
+simulatedMutantCounts
+
+# Manipulate data into suitable form for plotting
+tempMatrix <- as.matrix(cleanWildTypeData[2,2:49])
+colnames(tempMatrix) <- NULL
+wildTypeCountPlotData <- data.frame(Experimental = as.vector(tempMatrix), Simulated = simulatedWildTypeCounts[2,])
+tempMatrix <- as.matrix(cleanMutantData[7,2:49])
+colnames(tempMatrix) <- NULL
+mutantCountPlotData <- data.frame(Experimental = as.vector(tempMatrix), Simulated = simulatedMutantCounts[7,])
+
+# Compare simulated and experimental count data
+ggplot(wildTypeCountPlotData) + geom_histogram(aes(x=Experimental),fill="darkgreen",alpha = 0.5) + geom_histogram(aes(x=Simulated),fill="darkblue",alpha = 0.5) + geom_vline(aes(xintercept=mean(Simulated)), color="blue", linetype="dashed", size=1) + geom_vline(aes(xintercept=mean(Experimental)), color="green", linetype="dashed", size=1) + geom_vline(aes(xintercept=mean(Simulated)), color="blue", linetype="dashed", size=1)
+
+ggplot(mutantCountPlotData) + geom_histogram(aes(x=Experimental),fill="darkgreen",alpha = 0.5) + geom_histogram(aes(x=Simulated),fill="darkblue",alpha = 0.5) + geom_vline(aes(xintercept=mean(Experimental)), color="green", linetype="dashed", size=1) + geom_vline(aes(xintercept=mean(Simulated)), color="blue", linetype="dashed", size=1)
+
+# Compare means across all simulations through a pearson correlation coefficient and mean plot
+wildTypeExperimentMean <- apply(cleanWildTypeData[,2:49],MARGIN = 1,mean)
+mutantExperimentMean <- apply(cleanMutantData[,2:49],MARGIN = 1,mean)
+wildTypeSimulatedMean <- apply(simulatedWildTypeCounts,MARGIN = 1,mean)
+mutantSimulatedMean <- apply(simulatedMutantCounts,MARGIN = 1,mean)
+
+wildTypeMeanCorrelation <- cor(wildTypeExperimentMean[1:chosenRNABatchSize],wildTypeSimulatedMean)
+wildTypeMeanCorrelation
+mutantMeanCorrelation <- cor(mutantExperimentMean[1:chosenRNABatchSize],mutantSimulatedMean)
+mutantMeanCorrelation
+
+meanDifferencePlotDataFrame <- data.frame(WildType = wildTypeExperimentMean[1:chosenRNABatchSize] - wildTypeSimulatedMean, Mutant = mutantExperimentMean[1:chosenRNABatchSize]-mutantSimulatedMean)
+meanDifferencePlotDataFrame <- melt(meanDifferencePlotDataFrame, value.name = "Counts", variable.name = "Sample")
+meanDifferencePlotDataFrame <- tibble::rowid_to_column(meanDifferencePlotDataFrame, "ID")
+
+ggplot(meanDifferencePlotDataFrame) + geom_point(aes(x=ID,y=Counts))
+```
+
