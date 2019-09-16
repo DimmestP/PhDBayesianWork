@@ -5,7 +5,7 @@ output: html_document
 This is an automated version of the previous file in order to collected 5 different combinations of 4 wildtype and 4 mutants to test for consistancy, as well as the full 48 replicates. This computes it using DESeq2 and my negative binomial.
 
 ```{r setup, include=FALSE}
-source("~/diffExpModel/simpleTwoMutModel/code/negativeBinomialModel/nbinDataandLibrarySetup.R")
+source("~/diffExpModel/PhDBayesianWork/code/negativeBinomialModel/nbinDataandLibrarySetup.R")
 ```
 
 
@@ -44,10 +44,10 @@ for(i in 1:7) {
   
 
   # Once test build is complete, run model properly
-  nbinlogStanFit <- stan("~/diffExpModel/simpleTwoMutModel/code/negativeBinomialModel/nbinModel.stan",data = stanDataCurrent,iter = 2000, chains = 4)
+  nbinlogStanFit <- stan("~/diffExpModel/PhDBayesianWork/code/negativeBinomialModel/nbinModel.stan",data = stanDataCurrent,iter = 2000, chains = 4)
 
-  fileName <- paste0("~/diffExpModel/simpleTwoMutModel/data/simulated/autoDownSample",length(WTcolNamesRep[[i]]),"Rep",i,"iter.rds")
-  currentMetaData <- read_tsv("~/diffExpModel/simpleTwoMutModel/data/simulated/fourRepdownSamplednBinCompMetaData.tsv")
+  fileName <- paste0("~/diffExpModel/PhDBayesianWork/data/simulated/autoDownSample",length(WTcolNamesRep[[i]]),"Rep",i,"iter.rds")
+  currentMetaData <- read_tsv("~/diffExpModel/PhDBayesianWork/data/simulated/fourRepdownSamplednBinCompMetaData.tsv")
   metaData <- currentMetaData %>%  
     bind_rows(tibble(file=fileName,repNo=length(WTcolNamesRep[[i]]),wildRep=WTcolNamesRep[[i]],mutRep=MTcolNamesRep[[i]],maxRhat = max(summary(nbinlogStanFit)$summary[,10])))
   write_tsv(metaData,paste0("~/diffExpModel/simpleTwoMutModel/data/simulated/fourRepdownSamplednBinCompMetaData.tsv"))
