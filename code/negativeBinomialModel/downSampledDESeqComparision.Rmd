@@ -1,0 +1,122 @@
+---
+title: "Comparison of DESeq2 and the Negative Binomial model using down sampled Schurch et al 2016"
+output: html_document
+---
+This is an automated version of the previous file in order to collected 5 different combinations of 4 wildtype and 4 mutants to test for consistancy, as well as the full 48 replicates. This computes it using DESeq2 and my negative binomial.
+
+```{r setup, include=FALSE}
+source("~/diffExpModel/simpleTwoMutModel/code/negativeBinomialModel/nbinDataandLibrarySetup.R")
+```
+
+
+
+```{r nbinStanModelData}
+setupLibraries()
+WTData <- cleanWildTypeData %>%
+  select(-transcriptName)
+MTData <- cleanMutantData %>%
+  select(-transcriptName)
+chosenRNABatchSize <- 5755
+
+# Sample the column names from the 48 replicates s.t. no replicate is selected twice!
+
+WTcolNamesRep <- list()
+MTcolNamesRep <- list()
+
+# Tibble to hold the remaining replicates not chosen so far
+remainingWTCols <- tibble(colNumbers = 1:ncol(WTData))
+remainingMTCols <- tibble(colNumbers = 1:ncol(MTData))
+
+for(i in 1:6){
+  chosenReplicates <- 4
+  WTcolNamesRep[[i]] <- sample(remainingWTCols$colNumbers, chosenReplicates)
+  MTcolNamesRep[[i]] <- sample(remainingMTCols$colNumbers, chosenReplicates)
+  remainingWTCols <- remainingWTCols %>% filter(!(colNumbers %in% WTcolNamesRep[[i]]))
+  remainingMTCols <- remainingMTCols %>% filter(!(colNumbers %in% MTcolNamesRep[[i]]))
+}
+
+# Final run will contain all replicates
+WTcolNamesRep[[7]] <- 1:ncol(WTData)
+MTcolNamesRep[[7]] <- 1:ncol(MTData)
+
+for(i in 1:7) {
+  stanDataCurrent <- prepareData(chosenRNABatchSize,WTcolNamesRep[[i]],MTcolNamesRep[[i]])
+  
+
+  # Once test build is complete, run model properly
+  nbinlogStanFit <- stan("~/diffExpModel/simpleTwoMutModel/code/negativeBinomialModel/nbinModel.stan",data = stanDataCurrent,iter = 2000, chains = 4)
+
+  fileName <- paste0("~/diffExpModel/simpleTwoMutModel/data/simulated/autoDownSample",length(WTcolNamesRep[[i]]),"Rep",i,"iter.rds")
+  currentMetaData <- read_tsv("~/diffExpModel/simpleTwoMutModel/data/simulated/fourRepdownSamplednBinCompMetaData.tsv")
+  metaData <- currentMetaData %>%  
+    bind_rows(tibble(file=fileName,repNo=length(WTcolNamesRep[[i]]),wildRep=WTcolNamesRep[[i]],mutRep=MTcolNamesRep[[i]],maxRhat = max(summary(nbinlogStanFit)$summary[,10])))
+  write_tsv(metaData,paste0("~/diffExpModel/simpleTwoMutModel/data/simulated/fourRepdownSamplednBinCompMetaData.tsv"))
+  save(nbinlogStanFit,file=fileName)
+}
+```
+
+```{r prepareStanDataFunc}
+
+prepareData <- function(chosenRNABatchSize,WTcolNames,MTcolNames){
+  countsArray <- array(
+    cbind(
+      data.matrix(
+        WTData[1:chosenRNABatchSize, WTcolNames]
+        ),
+      data.matrix(
+        MTData[1:chosenRNABatchSize, MTcolNames]
+      )
+    ),
+    dim = c(chosenRNABatchSize,length(WTcolNames),2)
+  )# manipulation to merge count data into a single array for use in Rstan
+
+  stanData <- list(NRNA = chosenRNABatchSize, NReplicates = length(WTcolNames), counts = countsArray) 
+}
+```
+
+```{r DESeq2Analysis}
+library(DESeq2)
+wildTypeData <- cleanWildTypeData
+colnames(wildTypeData) <- c("transcriptName", str_c(colnames(wildTypeData)[2:49],rep("WT",48)))
+
+mutantTypeData <- cleanMutantData
+colnames(mutantTypeData) <- c("transcriptName", str_c(colnames(mutantTypeData)[2:49],rep("MU",48)))
+
+joinedCountData <- left_join(wildTypeData[,c(1,37,48,7,3)],mutantTypeData[,c(1,9,23,13,16)], by = "transcriptName") 
+
+# Create integer matrix of count data with row names equal to gene names
+cts <-  as.matrix(joinedCountData[2:9])
+row.names(cts) <- joinedCountData[[1]]
+
+# Create data frame explaining structure of count data matrix
+coldata <- data.frame(replicate = colnames(cts),condition = c(rep("wildtype",4),rep("mutant",4)),type = rep("single-read",8))
+
+# Convert count data into form readable by DESeq
+dds <- DESeqDataSetFromMatrix(countData = cts, colData = coldata, design = ~ condition)
+
+# Run DESeq
+dds <- DESeq(dds)
+
+# Check Results
+res <- as_tibble(results(dds),rownames="genename")
+res
+```
+
+```{r modelComparisons}
+load("../../data/simulated/autoDownSample48Rep7iter.rds")
+negBinPosteriorSample <- rstan::extract(nbinlogStanFit)
+
+negBinSampleMuWild <- negBinPosteriorSample$muWild     
+negBinSampleMuMut <- negBinPosteriorSample$muMut
+negBinSampleaWild <- negBinPosteriorSample$aWild     
+negBinSampleaMut <- negBinPosteriorSample$aMut
+
+diffMeanCounts <- 2^(negBinSampleMuWild) - 2^(negBinSampleMuMut)
+bayesNBPval <- tibble(bayesPVal = apply(diffMeanCounts, 2, function(x) sum(x > 0) / 4000))
+
+DESeq2NormCounts <- as_tibble(counts(dds, normalized=TRUE), rownames = "transcriptName") %>% gather(key=Replicate,value=count,-transcriptName) %>% separate(Replicate,into = c("Replicate","Condition"),sep="(?<=[0-9])(?=[MW])") %>% group_by(Condition,transcriptName) %>% summarise(count = mean(count)) %>% ungroup()
+
+DESeq2DiffCounts <- tibble(transcriptName=res$genename, DESeqDiff = DESeq2NormCounts %>% filter(Condition == "MU") %$% count - DESeq2NormCounts %>% filter(Condition == "WT") %$% count)
+BayesdiffMeanCounts <- tibble(bayesDiff = apply(diffMeanCounts, 2, median))
+```
+

@@ -1,0 +1,49 @@
+---
+title: "Creating a simulated RNA-seq dataset with known Differentially expressed genes for comparison between DESeq2 and negBinomial model"
+output: html_notebook
+---
+
+
+```{r createSimulatiom}
+BiocManager::install("compcodeR")
+BiocManager::install("RNATools")
+
+library(compcodeR)
+
+simulatedDataset <- generateSyntheticData(DESeq2Test,n.vars=5000,samples.per.cond=3,n.diffexp=1000,seqdepth=1000000,minfact=0.8,maxfact=1.2,fraction.upregulated=0.8,between.group.diffdisp=FALSE,filter.threshold.total=100,filter.threshold.mediancpm=10,fraction.non.overdispersed=0.5,effect.size=3)
+
+expData <- as.matrix(inner_join(cleanWildTypeData,cleanMutantData, by = "transcriptName", suffix = c(".W",".M")) %>% select(-transcriptName))
+rownames(expData) <- cleanWildTypeData %>% pull(transcriptName)
+
+colCondition <-c(rep("Wild",48),rep("Mut",48))
+
+
+simulatedDataset <- SimSeq::SimData(expData,colCondition,sort.method="unpaired",n.genes=5755,n.diff=1000,k.ind=3)
+```
+
+```{r runDESeq2}
+
+library(DESeq2)
+
+simulatedCounts <- simulatedDataset$counts
+
+colnames(simulatedCounts) <- c("W_Rep1","W_Rep2","W_Rep3","M_Rep1","M_Rep2","M_Rep3")
+
+# Create data frame explaining structure of count data matrix
+coldata <- data.frame(replicate = colnames(simulatedCounts),condition = c(rep("wildtype",3),rep("mutant",3)),type = rep("single-read",6))
+
+# Convert count data into form readable by DESeq
+dds <- DESeqDataSetFromMatrix(countData = simulatedCounts, colData = coldata, design = ~ condition)
+
+dds
+
+# Run DESeq
+dds <- DESeq(dds)
+
+# Check Results
+res <- results(dds)
+sum(res$padj < 0.05)
+
+as.tibble(rownames="transcriptName",res) %>% filter(padj < 0.05, transcriptName %in% rownames(simulatedDataset$counts[simulatedDataset$DE.genes,]))
+```
+

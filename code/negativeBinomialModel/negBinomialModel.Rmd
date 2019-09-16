@@ -1,0 +1,284 @@
+---
+title: "2MutantsCountsModel"
+author: "Samuel Joseph Haynes"
+date: "22/03/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+source("~/diffExpModel/simpleTwoMutModel/code/negativeBinomialModel/nbinDataandLibrarySetup.R")
+```
+
+```{r nbinStanModelData}
+setupLibraries()
+chosenRNABatchSize <- 5755
+chosenReplicates <- 24
+chosenStartRNA <- 1
+
+countsArray <- array(
+  cbind(
+    data.matrix(
+      cleanWildTypeData[chosenStartRNA:(chosenStartRNA+chosenRNABatchSize-1),2:(chosenReplicates +  1)]
+      ),
+    data.matrix(
+      cleanMutantData[chosenStartRNA:(chosenStartRNA+chosenRNABatchSize-1),2:(chosenReplicates +  1)]
+    )
+  ),
+  dim = c(chosenRNABatchSize,chosenReplicates,2)
+)# Strange manipulation to merge multi-tibble count data into a single array
+
+stanData <- list(NRNA = chosenRNABatchSize, NReplicates = chosenReplicates, counts = countsArray) 
+nbinModelCompile <- stan_model("~/diffExpModel/simpleTwoMutModel/code/negativeBinomialModel/nbinModel.stan")
+```
+
+```{r mapNbinStanModel}
+nbinModelMAP <- rstan::optimizing(nbinModelCompile,data = stanData,hessian=TRUE)
+```
+
+```{r buildNbinModel}
+initialValuesMAP = list(muWild = nbinModelMAP$par[1:chosenRNABatchSize],muMut = nbinModelMAP$par[(chosenRNABatchSize+1):(2*chosenRNABatchSize)],aMut = nbinModelMAP$par[(2*chosenRNABatchSize+1):(2*chosenRNABatchSize+chosenReplicates)],aWild = nbinModelMAP$par[(2*chosenRNABatchSize+chosenReplicates+1):(2*chosenRNABatchSize+2*chosenReplicates)],phi=nbinModelMAP$par[2*chosenRNABatchSize+2*chosenReplicates+1])
+nbinModel <- stan(file = "~/diffExpModel/simpleTwoMutModel/code/negativeBinomialModel/nbinModel.stan",data=stanData,chains = 1,iter = 10)
+```
+
+```{r runNbinPoisson}
+
+# Once test build is complete, run model properly
+nbinStanFit <- stan(data = stanData,iter = 500, fit =  nbinModel, chains = 4, init = list(chain1 = initialValuesMAP,chain2 = initialValuesMAP,chain3 = initialValuesMAP, chain4 = initialValuesMAP))
+```
+
+```{r mcmcChecks}
+parameters <- rstan::extract(nbinStanFit)
+hist(parameters$phi)
+hist(parameters$muMut)
+```
+
+```{r divergingMCMCChecks}
+# Import a library of awesome general MCMC investigation tools
+library(bayesplot)
+
+# Extract the log posterior values after each iteration, on each chain
+lp <- log_posterior(nbinStanFit)
+
+# Extract the nuts parameter values after each iteration
+np <- nuts_params(nbinStanFit)
+
+# Extract all of the parameters sampled from the posteriors from each chain
+posterior <- as.array(nbinStanFit)
+
+# Plot a graph of the values of a selection of parameters after on iteration, 
+# highlighting divergent iterations in red
+mcmc_parcoord(posterior[,,50:100], np = np, transformations = log)
+
+# Plot bivariate scatterplots to see if a) they are colinear b) divergence occurs with set values
+mcmc_pairs(posterior, np = np, pars = c("aWild[2]","muMut[8]","muWild[9]","phi"))
+
+# Conduct a trace plot for the four chains, ensuring they converge and dont have an odd pattern
+mcmc_trace(posterior, pars = c("muWild[10]","muMut[7]","phi","aMut[2]"), np = np)
+
+# Plot a log posterior / NUTS accecptance statistics violin plot for the divergent and non divergent interations side by side.
+# It is often the case that diverged chains do not properly cover the sample space, hence their violin plots have much shorter tails
+mcmc_nuts_divergence(np, lp)
+
+```
+
+```{r postPosteriorChecks}
+# simulate the transcript count data from the inferred nbin parameters
+simulatedMCMCWildTypeCounts <- matrix(nrow=chosenRNABatchSize,ncol=chosenReplicates)
+for(i in 1:chosenRNABatchSize) for(j in 1:chosenReplicates){
+  mean <- sample(parameters$aWild[,j],1) * sample(parameters$muWild[,i],1)
+  dispersion <- parameters$phi
+  simulatedMCMCWildTypeCounts[i,j] <- rnbinom(1,mu = mean, size = dispersion)
+}
+
+
+simulatedMCMCMutantCounts <- matrix(nrow=chosenRNABatchSize,ncol=chosenReplicates)
+for(i in 1:chosenRNABatchSize) for(j in 1:chosenReplicates){
+  mean <- sample(parameters$aMut[,j],1) * sample(parameters$muMut[,i],1)
+  dispersion <- parameters$phi
+  simulatedMCMCMutantCounts[i,j] <- rnbinom(1,mu = mean, size = dispersion)
+}
+
+# Compare to MAP results
+simulatedMAPWildTypeCounts <- matrix(nrow=chosenRNABatchSize,ncol=chosenReplicates)
+for(i in 1:chosenRNABatchSize) for(j in 1:chosenReplicates){
+  mean <- nbinModelMAP$par[2*chosenRNABatchSize+chosenReplicates+j] * nbinModelMAP$par[i]
+  dispersion <- nbinModelMAP$par[2*chosenRNABatchSize+(2*chosenReplicates)+1]
+  simulatedMAPWildTypeCounts[i,j] <- rnbinom(1,mu = mean, size = dispersion)
+}
+
+
+simulatedMAPMutantCounts <- matrix(nrow=chosenRNABatchSize,ncol=chosenReplicates)
+for(i in 1:chosenRNABatchSize) for(j in 1:chosenReplicates){
+  mean <- nbinModelMAP$par[2*chosenRNABatchSize+j] * nbinModelMAP$par[chosenRNABatchSize + i]
+  dispersion <- nbinModelMAP$par[2*chosenRNABatchSize+chosenReplicates*2+1]
+  simulatedMAPMutantCounts[i,j] <- rnbinom(1,mu = mean, size = dispersion)
+}
+
+# Manipulate data into suitable form for plotting
+tempMatrix <- as.matrix(cleanWildTypeData[chosenStartRNA+9,2:(chosenReplicates+1)])
+colnames(tempMatrix) <- NULL
+wildTypeCountPlotData <- data.frame(Experimental = as.vector(tempMatrix),SimulatedMAP = simulatedMAPWildTypeCounts[10,], SimulatedMCMC = simulatedMCMCWildTypeCounts[10,])
+tempMatrix <- as.matrix(cleanMutantData[chosenStartRNA,2:(chosenReplicates+1)])
+colnames(tempMatrix) <- NULL
+mutantCountPlotData <- data.frame(Experimental = as.vector(tempMatrix), SimulatedMAP = simulatedMAPMutantCounts[1,], SimulatedMCMC = simulatedMCMCMutantCounts[1,])
+
+# Compare simulated and experimental count data
+ggplot(wildTypeCountPlotData) + geom_histogram(aes(x=Experimental),fill="darkgreen",alpha = 0.5) +
+geom_histogram(aes(x=SimulatedMAP),fill="darkred",alpha = 0.5) + geom_histogram(aes(x=SimulatedMCMC),fill="darkblue",alpha = 0.5) + geom_vline(aes(xintercept=mean(SimulatedMAP)), color="red", linetype="dashed", size=1) + geom_vline(aes(xintercept=mean(Experimental)), color="blue", linetype="dashed", size=1) + geom_vline(aes(xintercept=mean(SimulatedMCMC)), color="green", linetype="dashed", size=1) 
+
+ggplot(mutantCountPlotData) + geom_histogram(aes(x=Experimental),fill="darkgreen",alpha = 0.5) + geom_histogram(aes(x=SimulatedMAP),fill="darkred",alpha = 0.5) +
+geom_histogram(aes(x=SimulatedMCMC),fill="darkblue",alpha = 0.5) +
+geom_vline(aes(xintercept=mean(Experimental)), color="green", linetype="dashed", size=1) + geom_vline(aes(xintercept=mean(SimulatedMAP)), color="red", linetype="dashed", size=1) + geom_vline(aes(xintercept=mean(SimulatedMCMC)), color="blue", linetype="dashed", size=1)
+
+# Compare means across all simulations through a pearson correlation coefficient and mean plot
+wildTypeExperimentMean <- apply(cleanWildTypeData[,2:(chosenReplicates+1)],MARGIN = 1,mean)
+mutantExperimentMean <- apply(cleanMutantData[,2:(chosenReplicates+1)],MARGIN = 1,mean)
+wildTypeSimulatedMean <- apply(simulatedMCMCWildTypeCounts,MARGIN = 1,mean)
+mutantSimulatedMean <- apply(simulatedMCMCMutantCounts,MARGIN = 1,mean)
+
+wildTypeMeanCorrelation <- cor(wildTypeExperimentMean[chosenStartRNA:(chosenStartRNA+chosenRNABatchSize-1)],wildTypeSimulatedMean)
+wildTypeMeanCorrelation
+mutantMeanCorrelation <- cor(mutantExperimentMean[chosenStartRNA:(chosenStartRNA+chosenRNABatchSize-1)],mutantSimulatedMean)
+mutantMeanCorrelation
+
+meanDifferencePlotDataFrame <- data.frame(WildType = wildTypeExperimentMean[chosenStartRNA:(chosenStartRNA+chosenRNABatchSize-1)] - wildTypeSimulatedMean, Mutant = mutantExperimentMean[chosenStartRNA:(chosenStartRNA+chosenRNABatchSize-1)]-mutantSimulatedMean)
+meanDifferencePlotDataFrame <- melt(meanDifferencePlotDataFrame, value.name = "Counts", variable.name = "Sample")
+meanDifferencePlotDataFrame <- tibble::rowid_to_column(meanDifferencePlotDataFrame, "ID")
+
+ggplot(meanDifferencePlotDataFrame) + geom_point(aes(x=ID,y=Counts))
+```
+
+```{r MAPvsMCMC}
+muWildMCMC <- apply(parameters$muWild,MARGIN = -1,mean)
+muMutMCMC <- apply(parameters$muMut,MARGIN = -1,mean)
+aMutMCMC <- apply(parameters$aMut,MARGIN = -1,mean)
+aWildMCMC <- apply(parameters$aWild,MARGIN = -1,mean)
+mean(parameters$phi)
+
+muWildMAP <- nbinModelMAP$par[1:chosenRNABatchSize]
+muMutMAP <- nbinModelMAP$par[(chosenRNABatchSize+1):(2*chosenRNABatchSize)]
+aMutMAP <- nbinModelMAP$par[(2*chosenRNABatchSize+1):(2*chosenRNABatchSize+chosenReplicates)]
+aWildMAP <- nbinModelMAP$par[(2*chosenRNABatchSize+chosenReplicates+1):(2*chosenRNABatchSize+(chosenReplicates*2))]
+nbinModelMAP$par[2*chosenRNABatchSize+chosenReplicates*2]
+
+muVersesData <- tibble(MAP = c(muWildMAP,muMutMAP),MCMC = c(muWildMCMC, muMutMCMC))
+aVersesData <- tibble(MAP = c(aWildMAP,aMutMAP),MCMC = c(aWildMCMC, aMutMCMC))
+
+ggplot(data = muVersesData) + geom_histogram(aes(x=log(MAP)),alpha = 0.5, fill = "red") + geom_histogram(aes(x=log(MCMC)),alpha = 0.5, fill = "blue")
+ggplot(data = aVersesData) + geom_histogram(aes(x=MAP),alpha = 0.5, fill = "red") + geom_histogram(aes(x=MCMC),alpha = 0.5, fill = "blue")
+```
+
+```{r differentialExpressionCount}
+transcriptSimualtedMeanDiff <- (log(t(parameters$muWild)) - log(t(parameters$muMut)))
+transcriptSimualtedMeanAveDiff <- apply(transcriptSimualtedMeanDiff,1,mean)
+transcriptSimualtedMeanDiffPosNeg <- (transcriptSimualtedMeanDiff > 0)
+
+combinedTestData <- tibble(transcriptNames = cleanMutantData$transcriptName, bayesLogFold = transcriptSimualtedMeanAveDiff, bayesSignificant = apply(transcriptSimualtedMeanDiffPosNeg,1,sum)/1000, DESeqLogFold = res$log2FoldChange,DESeqSignificant = res$pvalue, DESeqSignificantAdj = res$padj)
+combinedTestData <- combinedTestData %>% 
+  mutate(bayesSignificantAdj = p.adjust(bayesSignificant,"fdr"))
+
+diffExpressedGene = FALSE
+for(i in 1 : chosenRNABatchSize){
+  if((combinedTestData$bayesSignificant[i] < 0.01) || (combinedTestData$bayesSignificant[i] > 0.99)) diffExpressedGene[i] = TRUE
+  else diffExpressedGene[i] = FALSE
+}
+```
+
+```{r DESeq2}
+library(DESeq2)
+vignette("DESeq2")
+
+
+joinedCountData <- left_join(cleanWildTypeData[0:chosenReplicates+1],cleanMutantData[0:chosenReplicates+1], by = "transcriptName", suffix = c("MU","WT")) 
+
+# Create integer matrix of count data with row names equal to gene names
+cts <-  as.matrix(joinedCountData[2:(chosenReplicates*2+1)])
+row.names(cts) <- joinedCountData[[1]]
+
+# Create data frame explaining structure of count data matrix
+coldata <- data.frame(replicate = colnames(cts),condition = c(rep("wildtype",chosenReplicates),rep("mutant",chosenReplicates)),type = rep("single-read",chosenReplicates*2))
+
+# Convert count data into form readable by DESeq
+dds <- DESeqDataSetFromMatrix(countData = cts, colData = coldata, design = ~ condition)
+
+dds
+
+# Run DESeq
+dds <- DESeq(dds)
+
+# Check Results
+res <- results(dds)
+
+```
+
+```{r scalingTest}
+
+tempGatherMutantData <- cleanMutantData[0:chosenReplicates+1]  %>%
+  gather(key = "Replicate", value = "Counts", -transcriptName) %>% 
+  mutate(Source = "Mut")
+
+combinedExperimentalData <- cleanWildTypeData[0:chosenReplicates+1] %>%
+  gather(key = "Replicate", value = "Counts", -transcriptName) %>% 
+  mutate(Source = "Wild") %>%
+  bind_rows(tempGatherMutantData)
+
+rescaleCounts <- function(oldCounts){
+  newCounts = 0
+  for(i in 1 :chosenReplicates){
+    newCounts[i] = oldCounts[i] / sample(parameters$aWild[,i],1)
+  }
+  for(i in 1 :chosenReplicates){
+    newCounts[i+chosenReplicates] = oldCounts[i+chosenReplicates] / sample(parameters$aMut[,i],1)
+  }
+  newCounts
+}
+
+scaledExperimentalData <- combinedExperimentalData %>%
+  group_by(transcriptName) %>%
+  mutate(normCounts = rescaleCounts(Counts)) %>%
+  gather(key = "Process", value = "count",normCounts, Counts)
+
+geneSummary <- tibble(transcriptName = cleanMutantData$transcriptName, logBayesTwoChange = (abs(transcriptSimualtedMeanAveDiff) > 0.2), significantBayes = diffExpressedGene)
+
+geneSummary <- geneSummary %>% add_column(logDESeqTwoChange = (abs(res$log2FoldChange) > 0.2)) %>% add_column(significantDESeq = (res$padj < 0.01))
+
+matchingResults <- geneSummary %>% filter(significantBayes & significantDESeq) %>% select(transcriptName)
+
+bayesResults <- geneSummary %>% filter(significantBayes) %>% select(transcriptName)
+
+DESeqResults <- geneSummary %>% filter(significantDESeq) %>% select(transcriptName)
+
+transcriptsOfInterest <- scaledExperimentalData %>% 
+  filter(!(transcriptName %in% bayesResults$transcriptName)) %>%
+  filter((transcriptName %in% DESeqResults$transcriptName)) %>% 
+  select(transcriptName) %>%
+  distinct() %>% 
+  pull(transcriptName)
+
+
+
+
+```
+
+```{r modelConfirmation}
+a <- sample(transcriptsOfInterest,1)
+DESeqVsBayesPlotData <- scaledExperimentalData  %>%
+  filter(transcriptName == a )
+ggplot(DESeqVsBayesPlotData) + geom_boxplot(aes(x = Source, y = count)) + facet_grid(cols = vars(Process))
+
+transcriptSimualtedMeanAveDiff <- scaledExperimentalData %>% 
+  filter(Process == "normCounts") %>%
+  group_by(transcriptName) %>%
+  spread(key = Source, value = count) %>%
+  summarise(logDiff = mean(log2(Wild) - log2(Mut))) %>%
+  pull(logDiff)
+
+
+logFoldPlotData = tibble(transcriptName = cleanMutantData$transcriptName, DESeq2Log2 = res$log2FoldChange, bayesLog2 = transcriptSimualtedMeanAveDiff)
+
+geom_diagline <- function(linetype='solid',size=0.1,colour="grey20",...) {
+    geom_abline(slope=1,intercept=0,linetype=linetype,colour=colour)
+}
+
+ggplot(logFoldPlotData) + geom_point(aes(x = DESeq2Log2, y = bayesLog2)) + geom_diagline()
+```
