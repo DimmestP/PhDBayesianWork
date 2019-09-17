@@ -44,7 +44,7 @@ for(i in 1:1) {
   
 
   # Once test build is complete, run model properly
-  nbinlogStanFit <- stan("~/diffExpModel/PhDBayesianWork/code/negativeBinomialModel/nbinModel.stan",data = stanDataCurrent,iter = 2000, chains = 4)
+  nbinlogStanFit <- stan("~/diffExpModel/PhDBayesianWork/code/negativeBinomialModel/nbinModel.stan",data = stanDataCurrent,iter = 1000, chains = 4)
 
   #fileName <- paste0("~/diffExpModel/PhDBayesianWork/data/simulated/autoDownSample",length(WTcolNamesRep[[i]]),"Rep",i,"iter.rds")
   #currentMetaData <- read_tsv("~/diffExpModel/PhDBayesianWork/data/simulated/fourRepdownSamplednBinCompMetaData.tsv")

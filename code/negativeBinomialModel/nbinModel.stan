@@ -55,6 +55,6 @@ model{
   }
   
   for(i in 1:NRNA) for(j in 1:NReplicates){
-    counts[i,j,2] ~ neg_binomial_2_log(2^(scaleFactors[(NReplicates + j)]+muMut[i]),phi);
+    counts[i,j,2] ~ neg_binomial_2(2^(scaleFactors[(NReplicates + j)]+muMut[i]),phi);
   }
 }
