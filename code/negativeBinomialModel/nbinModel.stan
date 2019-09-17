@@ -8,6 +8,10 @@ data {
   // for each transcript for each sample
   int<lower = 0> counts[NRNA,NReplicates,2];
 }
+transformed data{
+  int K = (2 * NReplicates);
+}
+
 parameters {
   vector[NRNA] muWild;
   
@@ -26,12 +30,11 @@ parameters {
 
 transformed parameters {
       // centre scale factors so that they are all compariable!
-      int K = (2 * NReplicates);
       vector[K] scaleFactors;  // centered
       for (k in 1:(K-1)) {
-        scaleFactors[k] = scaleFactors_raw[k];
+        scaleFactors[k] = scaleFactorsRaw[k];
       }
-      scaleFactors[K] = -sum(scaleFactors_raw);
+      scaleFactors[K] = -sum(scaleFactorsRaw);
 }
 
 model{
@@ -42,7 +45,7 @@ model{
    muMut ~ normal(8,2);
    
    // scale factor prior; one for each condition
-   scaleFactorsRaw ~ normal(0,0.01);
+   scaleFactorsRaw ~ double_exponential(0,0.1);
     
   // Cauchy prior for phi parameter;
    phi ~ cauchy(0,3);

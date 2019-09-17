@@ -17,8 +17,8 @@ setupLibraries <- function(){
 
 setupLibraries()
 # The wild type data needs to be extracted from its various files and imported into a R variable
-wildTypeFileNames <- list.files("~/diffExpModel/simpleTwoMutModel/data/experimental/wildType", full.names=TRUE)
-mutantFileNames <- list.files("~/diffExpModel/simpleTwoMutModel/data/experimental/snf2Mutant", full.names=TRUE)
+wildTypeFileNames <- list.files("~/diffExpModel/PhDBayesianWork/data/experimental/wildType", full.names=TRUE)
+mutantFileNames <- list.files("~/diffExpModel/PhDBayesianWork/data/experimental/snf2Mutant", full.names=TRUE)
 wildTypeData <- lapply(wildTypeFileNames,read.table)
 mutantData <- lapply(mutantFileNames,read.table)
 

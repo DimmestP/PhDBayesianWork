@@ -16,7 +16,7 @@ WTData <- cleanWildTypeData %>%
   select(-transcriptName)
 MTData <- cleanMutantData %>%
   select(-transcriptName)
-chosenRNABatchSize <- 5755
+chosenRNABatchSize <- 1000
 
 # Sample the column names from the 48 replicates s.t. no replicate is selected twice!
 
@@ -27,7 +27,7 @@ MTcolNamesRep <- list()
 remainingWTCols <- tibble(colNumbers = 1:ncol(WTData))
 remainingMTCols <- tibble(colNumbers = 1:ncol(MTData))
 
-for(i in 1:6){
+for(i in 1:1){
   chosenReplicates <- 4
   WTcolNamesRep[[i]] <- sample(remainingWTCols$colNumbers, chosenReplicates)
   MTcolNamesRep[[i]] <- sample(remainingMTCols$colNumbers, chosenReplicates)
@@ -36,22 +36,22 @@ for(i in 1:6){
 }
 
 # Final run will contain all replicates
-WTcolNamesRep[[7]] <- 1:ncol(WTData)
-MTcolNamesRep[[7]] <- 1:ncol(MTData)
+#WTcolNamesRep[[7]] <- 1:ncol(WTData)
+#MTcolNamesRep[[7]] <- 1:ncol(MTData)
 
-for(i in 1:7) {
+for(i in 1:1) {
   stanDataCurrent <- prepareData(chosenRNABatchSize,WTcolNamesRep[[i]],MTcolNamesRep[[i]])
   
 
   # Once test build is complete, run model properly
   nbinlogStanFit <- stan("~/diffExpModel/PhDBayesianWork/code/negativeBinomialModel/nbinModel.stan",data = stanDataCurrent,iter = 2000, chains = 4)
 
-  fileName <- paste0("~/diffExpModel/PhDBayesianWork/data/simulated/autoDownSample",length(WTcolNamesRep[[i]]),"Rep",i,"iter.rds")
-  currentMetaData <- read_tsv("~/diffExpModel/PhDBayesianWork/data/simulated/fourRepdownSamplednBinCompMetaData.tsv")
-  metaData <- currentMetaData %>%  
-    bind_rows(tibble(file=fileName,repNo=length(WTcolNamesRep[[i]]),wildRep=WTcolNamesRep[[i]],mutRep=MTcolNamesRep[[i]],maxRhat = max(summary(nbinlogStanFit)$summary[,10])))
-  write_tsv(metaData,paste0("~/diffExpModel/simpleTwoMutModel/data/simulated/fourRepdownSamplednBinCompMetaData.tsv"))
-  save(nbinlogStanFit,file=fileName)
+  #fileName <- paste0("~/diffExpModel/PhDBayesianWork/data/simulated/autoDownSample",length(WTcolNamesRep[[i]]),"Rep",i,"iter.rds")
+  #currentMetaData <- read_tsv("~/diffExpModel/PhDBayesianWork/data/simulated/fourRepdownSamplednBinCompMetaData.tsv")
+  #metaData <- currentMetaData %>%  
+   # bind_rows(tibble(file=fileName,repNo=length(WTcolNamesRep[[i]]),wildRep=WTcolNamesRep[[i]],mutRep=MTcolNamesRep[[i]],maxRhat = #max(summary(nbinlogStanFit)$summary[,10])))
+ # write_tsv(metaData,paste0("~/diffExpModel/simpleTwoMutModel/data/simulated/fourRepdownSamplednBinCompMetaData.tsv"))
+  #save(nbinlogStanFit,file=fileName)
 }
 ```
 
@@ -108,8 +108,7 @@ negBinPosteriorSample <- rstan::extract(nbinlogStanFit)
 
 negBinSampleMuWild <- negBinPosteriorSample$muWild     
 negBinSampleMuMut <- negBinPosteriorSample$muMut
-negBinSampleaWild <- negBinPosteriorSample$aWild     
-negBinSampleaMut <- negBinPosteriorSample$aMut
+negBinSampleaWild <- negBinPosteriorSample$scaleFactors
 
 diffMeanCounts <- 2^(negBinSampleMuWild) - 2^(negBinSampleMuMut)
 bayesNBPval <- tibble(bayesPVal = apply(diffMeanCounts, 2, function(x) sum(x > 0) / 4000))
