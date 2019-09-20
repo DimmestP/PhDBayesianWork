@@ -16,7 +16,7 @@ WTData <- cleanWildTypeData %>%
   select(-transcriptName)
 MTData <- cleanMutantData %>%
   select(-transcriptName)
-chosenRNABatchSize <- 1000
+chosenRNABatchSize <- 5755
 
 # Sample the column names from the 48 replicates s.t. no replicate is selected twice!
 
@@ -27,7 +27,7 @@ MTcolNamesRep <- list()
 remainingWTCols <- tibble(colNumbers = 1:ncol(WTData))
 remainingMTCols <- tibble(colNumbers = 1:ncol(MTData))
 
-for(i in 1:1){
+for(i in 1:4){
   chosenReplicates <- 4
   WTcolNamesRep[[i]] <- sample(remainingWTCols$colNumbers, chosenReplicates)
   MTcolNamesRep[[i]] <- sample(remainingMTCols$colNumbers, chosenReplicates)
@@ -39,19 +39,19 @@ for(i in 1:1){
 #WTcolNamesRep[[7]] <- 1:ncol(WTData)
 #MTcolNamesRep[[7]] <- 1:ncol(MTData)
 
-for(i in 1:1) {
+for(i in 1:4) {
   stanDataCurrent <- prepareData(chosenRNABatchSize,WTcolNamesRep[[i]],MTcolNamesRep[[i]])
   
 
   # Once test build is complete, run model properly
-  nbinlogStanFit <- stan("~/diffExpModel/PhDBayesianWork/code/negativeBinomialModel/nbinModel.stan",data = stanDataCurrent,iter = 1000, chains = 4)
+  nbinlogStanFit <- stan("~/diffExpModel/PhDBayesianWork/code/negativeBinomialModel/nbinModel.stan",data = stanDataCurrent,iter = 2000, chains = 4)
 
-  #fileName <- paste0("~/diffExpModel/PhDBayesianWork/data/simulated/autoDownSample",length(WTcolNamesRep[[i]]),"Rep",i,"iter.rds")
-  #currentMetaData <- read_tsv("~/diffExpModel/PhDBayesianWork/data/simulated/fourRepdownSamplednBinCompMetaData.tsv")
-  #metaData <- currentMetaData %>%  
-   # bind_rows(tibble(file=fileName,repNo=length(WTcolNamesRep[[i]]),wildRep=WTcolNamesRep[[i]],mutRep=MTcolNamesRep[[i]],maxRhat = #max(summary(nbinlogStanFit)$summary[,10])))
- # write_tsv(metaData,paste0("~/diffExpModel/simpleTwoMutModel/data/simulated/fourRepdownSamplednBinCompMetaData.tsv"))
-  #save(nbinlogStanFit,file=fileName)
+  fileName <- paste0("~/diffExpModel/PhDBayesianWork/data/simulated/autoDownSample",length(WTcolNamesRep[[i]]),"Rep",i,"iter.rds")
+  currentMetaData <- read_tsv("~/diffExpModel/PhDBayesianWork/data/simulated/fourRepdownSamplednBinCompMetaData.tsv")
+  metaData <- currentMetaData %>%  
+    bind_rows(tibble(file=fileName,repNo=length(WTcolNamesRep[[i]]),wildRep=WTcolNamesRep[[i]],mutRep=MTcolNamesRep[[i]],maxRhat = max(summary(nbinlogStanFit)$summary[,10])))
+  write_tsv(metaData,paste0("~/diffExpModel/PhDBayesianWork/data/simulated/fourRepdownSamplednBinCompMetaData.tsv"))
+  save(nbinlogStanFit,file=fileName)
 }
 ```
 
@@ -82,14 +82,16 @@ colnames(wildTypeData) <- c("transcriptName", str_c(colnames(wildTypeData)[2:49]
 mutantTypeData <- cleanMutantData
 colnames(mutantTypeData) <- c("transcriptName", str_c(colnames(mutantTypeData)[2:49],rep("MU",48)))
 
-joinedCountData <- left_join(wildTypeData[,c(1,37,48,7,3)],mutantTypeData[,c(1,9,23,13,16)], by = "transcriptName") 
+joinedCountData <- left_join(wildTypeData[, c(1,1+WTcolNamesRep[[1]])],mutantTypeData[,c(1,1+MTcolNamesRep[[1]])], by = "transcriptName") 
+
+joinedFullCountData <- left_join(wildTypeData,mutantTypeData, by = "transcriptName") 
 
 # Create integer matrix of count data with row names equal to gene names
-cts <-  as.matrix(joinedCountData[2:9])
-row.names(cts) <- joinedCountData[[1]]
+cts <-  as.matrix(joinedFullCountData %>% select(-transcriptName))
+row.names(cts) <- joinedFullCountData[[1]]
 
 # Create data frame explaining structure of count data matrix
-coldata <- data.frame(replicate = colnames(cts),condition = c(rep("wildtype",4),rep("mutant",4)),type = rep("single-read",8))
+coldata <- data.frame(replicate = colnames(cts),condition = c(rep("wildtype",48),rep("mutant",48)),type = rep("single-read",96))
 
 # Convert count data into form readable by DESeq
 dds <- DESeqDataSetFromMatrix(countData = cts, colData = coldata, design = ~ condition)
@@ -102,20 +104,72 @@ res <- as_tibble(results(dds),rownames="genename")
 res
 ```
 
-```{r modelComparisons}
-load("../../data/simulated/autoDownSample48Rep7iter.rds")
+```{r BayesRepComparison}
+fourRepMultiIterComp <- tibble(geneName = cleanWildTypeData[[1]])
+
+# using the posterior samples from the 4 repeats of analyses of the Schuech et al dataset, downsampled to only 4 replicates each, determine which genes are regularly detected as significatly differentially expressed 
+for(i in 1:4){
+load(paste0("../../data/simulated/autoDownSample4Rep",i,"iter.rds"))
 negBinPosteriorSample <- rstan::extract(nbinlogStanFit)
 
 negBinSampleMuWild <- negBinPosteriorSample$muWild     
 negBinSampleMuMut <- negBinPosteriorSample$muMut
-negBinSampleaWild <- negBinPosteriorSample$scaleFactors
 
-diffMeanCounts <- 2^(negBinSampleMuWild) - 2^(negBinSampleMuMut)
-bayesNBPval <- tibble(bayesPVal = apply(diffMeanCounts, 2, function(x) sum(x > 0) / 4000))
+diffMeanCounts <- - 2^(negBinSampleMuWild) + 2^(negBinSampleMuMut)
+bayesNBPval <- tibble(geneName = cleanWildTypeData[[1]],bayesPVal = apply(diffMeanCounts, 2, function(x) sum(x < 0) / 4000)) %>% mutate(sigGene = (bayesPVal < 0.025 | bayesPVal > 0.975)) %>% select(-bayesPVal)
 
+colnames(bayesNBPval)[2] = paste0("bayesIter",i)
+
+fourRepMultiIterComp <- inner_join(fourRepMultiIterComp,bayesNBPval,by="geneName") 
+
+}
+
+# using the same group of technical replicates, repeat the detection test but for DEseq2!
+
+metaData <- read_tsv("../../data/simulated/fourRepdownSamplednBinCompMetaData.tsv")
+j=1
+
+for( i in metaData %>% filter(!is.na(file)) %>% group_split(file)){
+   chosenWildReplicate <- i %>% pull(wildRep)
+   chosenMutReplicate <- i %>% pull(mutRep)
+   
+   joinedCountData <- left_join(cleanWildTypeData[, c(1,1+chosenWildReplicate)],cleanMutantData[,c(1,1+chosenMutReplicate)], by = "transcriptName") 
+
+# Create integer matrix of count data with row names equal to gene names
+cts <-  as.matrix(joinedCountData %>% select(-transcriptName))
+row.names(cts) <- joinedCountData[[1]]
+
+# Create data frame explaining structure of count data matrix
+coldata <- data.frame(replicate = colnames(cts),condition = c(rep("wildtype",length(chosenWildReplicate)),rep("mutant",length(chosenMutReplicate))),type = rep("single-read",8))
+
+# Convert count data into form readable by DESeq
+dds <- DESeqDataSetFromMatrix(countData = cts, colData = coldata, design = ~ condition)
+
+# Run DESeq
+dds <- DESeq(dds)
+
+# Check Results
+DESeqSig <- as_tibble(results(dds),rownames="geneName") %>% mutate(sigGene = (padj < 0.05)) %>% select(geneName,sigGene)
+
+colnames(DESeqSig)[2] = paste0("DEseq2iter",j)
+
+fourRepMultiIterComp <- inner_join(fourRepMultiIterComp,DESeqSig,by="geneName") 
+
+j = j + 1
+}
+
+stabilityComparision <- fourRepMultiIterComp %>% gather(key=iteration,value=significant,-geneName) %>% mutate(source = c(rep("Bayesian",23020),rep("DESeq2",23020))) %>% group_by(geneName,source) %>% summarise(nuSigs = sum(significant)) %>% ungroup() %>% group_by(nuSigs,source) %>% summarise(geneNo = n()) %>% filter(nuSigs != 0)
+
+ggplot(stabilityComparision) + geom_bar(aes(x=source,y=geneNo,fill=as.factor(nuSigs)),stat = "identity")
+
+
+```
+
+```{r DESeqBullshit}
 DESeq2NormCounts <- as_tibble(counts(dds, normalized=TRUE), rownames = "transcriptName") %>% gather(key=Replicate,value=count,-transcriptName) %>% separate(Replicate,into = c("Replicate","Condition"),sep="(?<=[0-9])(?=[MW])") %>% group_by(Condition,transcriptName) %>% summarise(count = mean(count)) %>% ungroup()
 
-DESeq2DiffCounts <- tibble(transcriptName=res$genename, DESeqDiff = DESeq2NormCounts %>% filter(Condition == "MU") %$% count - DESeq2NormCounts %>% filter(Condition == "WT") %$% count)
-BayesdiffMeanCounts <- tibble(bayesDiff = apply(diffMeanCounts, 2, median))
+DESeq2DiffCounts <- tibble(transcriptName=res$genename, DESeqDiff = DESeq2NormCounts %>% filter(Condition == "MU") %$% count - DESeq2DiffCounts %>% filter(Condition == "WT") %$% count)
+
+DESeqVsBayesSig <- res %>% select(genename,padj) %>% transmute(genename,DESeqPadj = padj) %>% mutate(DESeqSig = DESeqPadj<0.05) %>% bind_cols(bayesNBPval) %>% mutate(bayesNBSig = bayesPVal < 0.05)
 ```
 
