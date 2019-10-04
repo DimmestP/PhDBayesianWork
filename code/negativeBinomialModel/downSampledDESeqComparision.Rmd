@@ -18,40 +18,45 @@ MTData <- cleanMutantData %>%
   select(-transcriptName)
 chosenRNABatchSize <- 5755
 
-# Sample the column names from the 48 replicates s.t. no replicate is selected twice!
+# Bootstrap replicate downsampling to have multiple runs of the same number of replicates
+chosenNumberReplicates <- c(2,4,8,12,24,48)
 
 WTcolNamesRep <- list()
 MTcolNamesRep <- list()
 
-# Tibble to hold the remaining replicates not chosen so far
-remainingWTCols <- tibble(colNumbers = 1:ncol(WTData))
-remainingMTCols <- tibble(colNumbers = 1:ncol(MTData))
-
-for(i in 1:4){
-  chosenReplicates <- 4
-  WTcolNamesRep[[i]] <- sample(remainingWTCols$colNumbers, chosenReplicates)
-  MTcolNamesRep[[i]] <- sample(remainingMTCols$colNumbers, chosenReplicates)
-  remainingWTCols <- remainingWTCols %>% filter(!(colNumbers %in% WTcolNamesRep[[i]]))
-  remainingMTCols <- remainingMTCols %>% filter(!(colNumbers %in% MTcolNamesRep[[i]]))
+for(i in 1:length(chosenNumberReplicates)){
+  currentReplicates <- chosenNumberReplicates[i]
+  if(currentReplicates != 48){
+    for(j in 1:4){
+      WTcolNamesRep[[(((i-1) * 4) + j)]] <- sample(1:48, currentReplicates)
+      MTcolNamesRep[[(((i-1) * 4) + j)]] <- sample(1:48, currentReplicates)
+    }
+  }
+  else {
+    WTcolNamesRep[[(((i-1) * 4) + 1)]] <- 1:ncol(WTData)
+    MTcolNamesRep[[(((i-1) * 4) + 1)]] <- 1:ncol(MTData)
+    for(j in 2:4){
+      WTcolNamesRep[[(((i-1) * 4) + j)]] <- WTcolNamesRep[[(((2-1) * 4) + 1)]]
+      MTcolNamesRep[[(((i-1) * 4) + j)]] <- WTcolNamesRep[[(((2-1) * 4) + 1)]]
+    }
+  }
 }
 
-# Final run will contain all replicates
-#WTcolNamesRep[[7]] <- 1:ncol(WTData)
-#MTcolNamesRep[[7]] <- 1:ncol(MTData)
+for(i in 1:length(chosenNumberReplicates)){
+  for(j in 1:4){
+    # Once bootstrapped downsampling has been completed, run the simulation
+    # Using more cores to reduce the timing!
+    stanDataCurrent <- prepareData(chosenNumberReplicates[i],WTcolNamesRep[[(((i-1) * 4) + j)]],MTcolNamesRep[[(((i-1) * 4) + j)]])
+    
+    nbinlogStanFit <- stan("~/diffExpModel/PhDBayesianWork/code/negativeBinomialModel/nbinModel.stan",data = stanDataCurrent,iter = 750, chains = 16,warmup = 500)
 
-for(i in 1:4) {
-  stanDataCurrent <- prepareData(chosenRNABatchSize,WTcolNamesRep[[i]],MTcolNamesRep[[i]])
-  
-
-  # Once test build is complete, run model properly
-  nbinlogStanFit <- stan("~/diffExpModel/PhDBayesianWork/code/negativeBinomialModel/nbinModel.stan",data = stanDataCurrent,iter = 2000, chains = 4)
-
-  fileName <- paste0("~/diffExpModel/PhDBayesianWork/data/simulated/autoDownSample",length(WTcolNamesRep[[i]]),"Rep",i,"iter.rds")
-  currentMetaData <- read_tsv("~/diffExpModel/PhDBayesianWork/data/simulated/fourRepdownSamplednBinCompMetaData.tsv")
-  metaData <- currentMetaData %>%  
-    bind_rows(tibble(file=fileName,repNo=length(WTcolNamesRep[[i]]),wildRep=WTcolNamesRep[[i]],mutRep=MTcolNamesRep[[i]],maxRhat = max(summary(nbinlogStanFit)$summary[,10])))
-  write_tsv(metaData,paste0("~/diffExpModel/PhDBayesianWork/data/simulated/fourRepdownSamplednBinCompMetaData.tsv"))
-  save(nbinlogStanFit,file=fileName)
+    fileName <- paste0("~/diffExpModel/PhDBayesianWork/data/simulated/autoDownSample",length(WTcolNamesRep[[(((i-1) * 4) + j)]]),"Replicates",j,"iter.rds")
+    currentMetaData <- read_tsv("~/diffExpModel/PhDBayesianWork/data/simulated/fourRepdownSamplednBinCompMetaData.tsv")
+    metaData <- currentMetaData %>%  
+      bind_rows(tibble(file=fileName,repNo=length(WTcolNamesRep),wildRep=WTcolNamesRep,mutRep=MTcolNamesRep,maxRhat = max(summary(nbinlogStanFit)$summary[,10])))
+    write_tsv(metaData,paste0("~/diffExpModel/PhDBayesianWork/data/simulated/fourRepdownSamplednBinCompMetaData.tsv"))
+    save(nbinlogStanFit,file=fileName)
+  }
 }
 ```
 
@@ -82,16 +87,23 @@ colnames(wildTypeData) <- c("transcriptName", str_c(colnames(wildTypeData)[2:49]
 mutantTypeData <- cleanMutantData
 colnames(mutantTypeData) <- c("transcriptName", str_c(colnames(mutantTypeData)[2:49],rep("MU",48)))
 
-joinedCountData <- left_join(wildTypeData[, c(1,1+WTcolNamesRep[[1]])],mutantTypeData[,c(1,1+MTcolNamesRep[[1]])], by = "transcriptName") 
+usedWTcolNamesRep <- metaData %>% filter(!is.na(file)) %>%  select(file,wildRep) %>% group_by(file) %>% group_split()
+usedMTcolNamesRep <- metaData %>% filter(!is.na(file)) %>%  select(file,mutRep) %>% group_by(file) %>% group_split()
 
-joinedFullCountData <- left_join(wildTypeData,mutantTypeData, by = "transcriptName") 
+DESeqMultiRepComp <- tibble(geneName = cleanWildTypeData[[1]])
+
+for(i in 1:8){
+  currentWTRep <- usedWTcolNamesRep[[i]] %>% pull(wildRep)
+  currentMTRep <- usedMTcolNamesRep[[i]] %>% pull(mutRep)
+
+joinedCountData <- left_join(wildTypeData[, c(1,1+currentWTRep)],mutantTypeData[,c(1,1+currentMTRep)], by = "transcriptName") 
 
 # Create integer matrix of count data with row names equal to gene names
-cts <-  as.matrix(joinedFullCountData %>% select(-transcriptName))
-row.names(cts) <- joinedFullCountData[[1]]
+cts <-  as.matrix(joinedCountData %>% select(-transcriptName))
+row.names(cts) <- joinedCountData[[1]]
 
 # Create data frame explaining structure of count data matrix
-coldata <- data.frame(replicate = colnames(cts),condition = c(rep("wildtype",48),rep("mutant",48)),type = rep("single-read",96))
+coldata <- data.frame(replicate = colnames(cts),condition = c(rep("wildtype",length(currentWTRep)),rep("mutant",length(currentMTRep))),type = rep("single-read",2*length(currentMTRep)))
 
 # Convert count data into form readable by DESeq
 dds <- DESeqDataSetFromMatrix(countData = cts, colData = coldata, design = ~ condition)
@@ -99,9 +111,15 @@ dds <- DESeqDataSetFromMatrix(countData = cts, colData = coldata, design = ~ con
 # Run DESeq
 dds <- DESeq(dds)
 
-# Check Results
+# Convert to binary diff or not 
 res <- as_tibble(results(dds),rownames="genename")
-res
+currentRepDEDetect<- res %>% transmute(genename,diffExp = padj < 0.05)
+
+colnames(currentRepDEDetect) <- c("geneName",paste0("DESeq",i,"Rep"))
+
+DESeqMultiRepComp <- inner_join(DESeqMultiRepComp,currentRepDEDetect)
+}
+colnames(DESeqMultiRepComp) <- c("geneName","DESeq4RepIter1","DESeq4RepIter2","DESeq4RepIter3","DESeq4RepIter4","DESeq2Rep","DESeq8Rep","DESeq12Rep","DESeq24Rep") 
 ```
 
 ```{r BayesRepComparison}
@@ -160,8 +178,9 @@ j = j + 1
 
 stabilityComparision <- fourRepMultiIterComp %>% gather(key=iteration,value=significant,-geneName) %>% mutate(source = c(rep("Bayesian",23020),rep("DESeq2",23020))) %>% group_by(geneName,source) %>% summarise(nuSigs = sum(significant)) %>% ungroup() %>% group_by(nuSigs,source) %>% summarise(geneNo = n()) %>% filter(nuSigs != 0)
 
-ggplot(stabilityComparision) + geom_bar(aes(x=source,y=geneNo,fill=as.factor(nuSigs)),stat = "identity")
+ggplot(stabilityComparision) + geom_bar(aes(x=source,y=geneNo,fill=as.factor(nuSigs)),stat = "identity") + theme(axis.title.x = element_blank()) + ylab("# Genes Differentially Expressed") +labs(fill="Detected")
 
+# ggsave("~/diffExpModel/PhDBayesianWork/data/simulated/DESeq2vsBayesianStabilityPlot.png",stabilityComparisonPlot,device ="png")
 
 ```
 
@@ -173,3 +192,98 @@ DESeq2DiffCounts <- tibble(transcriptName=res$genename, DESeqDiff = DESeq2NormCo
 DESeqVsBayesSig <- res %>% select(genename,padj) %>% transmute(genename,DESeqPadj = padj) %>% mutate(DESeqSig = DESeqPadj<0.05) %>% bind_cols(bayesNBPval) %>% mutate(bayesNBSig = bayesPVal < 0.05)
 ```
 
+```{r poorRepAnalysis}
+# Following the work by Gierliński et al I want to analyse the correlation between R hat values and whether the replicates are 'good' or 'bad'
+
+# Work out the median correlation between transcript counts for all genes across all replicates
+medianRepCorrelationWT <- apply(cor(WTData,WTData),1,median)
+medianRepCorrelationMT <- apply(cor(MTData,MTData),1,median)
+
+# Work out the fraction of outliers in rep
+outlierFracCount <- function(repGeneCounts){
+  outlierMatrix <- apply(data.matrix(repGeneCounts),1,geneOutlierCount)
+  apply(outlierMatrix,1,(function(singleRepOutlier) sum(singleRepOutlier) / length(singleRepOutlier) ))
+}
+  
+  
+geneOutlierCount <- function(acrossRepGeneCounts){
+  # Remove possible outliers across replicates
+  stableRepGeneCounts <- sort(acrossRepGeneCounts)
+  stableRepGeneCounts <- stableRepGeneCounts[1:(length(stableRepGeneCounts)-3)]
+  stableRepGeneCounts <- stableRepGeneCounts[4:length(stableRepGeneCounts)]
+  
+  # Workout mean and SD of 'normal' reps
+  stableRepCountMean <- mean(stableRepGeneCounts)
+  stableRepCountSD <- sd(stableRepGeneCounts)
+  
+  # Detect if outlier
+  outlierRep <- vector(mode="logical",length=length(acrossRepGeneCounts))
+  for(i in 1:length(acrossRepGeneCounts)){
+    outlierRep[i] <- abs(acrossRepGeneCounts[i] - stableRepCountMean) > 5 * stableRepCountSD 
+  }
+  outlierRep
+}
+
+repFracOutliersWT <- outlierFracCount(WTData)
+repFracOutliersMT <- outlierFracCount(MTData)
+
+ggplot() + geom_point(aes(x = 1:48, y = medianRepCorrelationWT),colour="blue") + geom_point(aes(x = 1:48, y = medianRepCorrelationMT),colour="red")
+
+ggplot() + geom_point(aes(x = 1:48, y = repFracOutliersWT),colour="blue") + geom_point(aes(x = 1:48, y = repFracOutliersMT),colour="red")
+
+repScoreWT <- tibble(wildRep = 1:48, wildScore = log(medianRepCorrelationWT) + log(1 - repFracOutliersWT))
+
+repScoreMT <- tibble(mutRep = 1:48, mutScore = log(medianRepCorrelationMT) + log(1 - repFracOutliersMT))
+
+sequencingDepthWT <- tibble(mutRep = 1:48,seqDepthWT = apply(WTData,2,sum))
+sequencingDepthMT <- tibble(mutRep = 1:48,seqDepthMT = apply(MTData,2,sum))
+
+RhatVsRepScore <- metaData %>% filter(!is.na(file)) %>% inner_join(repScoreWT) %>% inner_join(repScoreMT) %>% inner_join(sequencingDepthWT) %>% inner_join(sequencingDepthMT) %>% group_by(file) %>% mutate(totScore = mean(wildScore)+mean(mutScore),sdSeqDepth = sd(seqDepthMT)) %>% distinct(file,maxRhat,totScore,sdSeqDepth)
+
+ggplot(RhatVsRepScore) + geom_point(aes(y=maxRhat,x=totScore))
+
+ggplot(RhatVsRepScore) + geom_point(aes(y=maxRhat,x=sdSeqDepth))
+```
+
+```{r createROCGraph}
+# Using the 
+
+bayesFullDetectionCor<- fourRepMultiIterComp %>% gather(key=source,value=diffExp,-bayes24Rep,-geneName) %>% group_by(source,diffExp,bayes24Rep) %>% summarise(Number=n())
+
+truePositivesBayes <- deframe(bayesFullDetectionCor %>% filter(diffExp,bayes24Rep) %>% ungroup() %>% select(source,Number))
+trueNegativesBayes <-  deframe(bayesFullDetectionCor %>% filter(!diffExp,!bayes24Rep) %>% ungroup() %>% select(source,Number))
+falsePositivesBayes <- deframe(bayesFullDetectionCor %>% filter(diffExp,!bayes24Rep) %>% ungroup() %>% select(source,Number))
+falseNegativesBayes <- deframe(bayesFullDetectionCor %>% filter(!diffExp,bayes24Rep) %>% ungroup() %>% select(source,Number))
+
+DESeqFullDetectionCor<- DESeqMultiRepComp %>% gather(key=source,value=diffExp,-DESeq24Rep,-geneName) %>% group_by(source,diffExp,DESeq24Rep) %>% summarise(Number=n())
+
+truePositivesDESeq <- deframe(DESeqFullDetectionCor %>% filter(diffExp,DESeq24Rep) %>% ungroup() %>% select(source,Number))
+trueNegativesDESeq <- deframe(DESeqFullDetectionCor %>% filter(!diffExp,!DESeq24Rep) %>% ungroup() %>% select(source,Number))
+falsePositivesDESeq <- deframe(DESeqFullDetectionCor %>% filter(diffExp,!DESeq24Rep) %>% ungroup() %>% select(source,Number))
+falseNegativesDESeq <- deframe(DESeqFullDetectionCor %>% filter(!diffExp,DESeq24Rep) %>% ungroup() %>% select(source,Number))
+
+MultiRepComp <- inner_join(fourRepMultiIterComp %>% select(geneName,bayes24Rep),DESeqMultiRepComp) %>% gather(key=source,value=diffExp,-bayes24Rep,-geneName) %>% group_by(source,diffExp,bayes24Rep) %>% summarise(Number=n())
+
+truePositivesComp <- deframe(MultiRepComp %>% filter(diffExp,bayes24Rep) %>% ungroup() %>% select(source,Number))
+trueNegativesComp <- deframe(MultiRepComp %>% filter(!diffExp,!bayes24Rep) %>% ungroup() %>% select(source,Number))
+falsePositivesComp <- deframe(MultiRepComp %>% filter(diffExp,!bayes24Rep) %>% ungroup() %>% select(source,Number))
+falseNegativesComp <- deframe(MultiRepComp %>% filter(!diffExp,bayes24Rep) %>% ungroup() %>% select(source,Number))
+
+ROCCompData <- tibble(source = names(truePositivesComp),TPR = truePositivesComp / (truePositivesComp + falseNegativesComp),FPR=falsePositivesComp / (trueNegativesComp+falsePositivesComp),order = c(7,8,1,2,3,4,5,6)) %>% arrange(order) %>% gather(TPR,FPR,key=Stat,value=Rate)
+
+bayesROCdata <- tibble(source = names(truePositivesBayes),TPR = truePositivesBayes / (truePositivesBayes + falseNegativesBayes),FPR=falsePositivesBayes / (trueNegativesBayes+falsePositivesBayes),order = c(7,1,2,3,4,5,6))  %>% arrange(order) %>% gather(TPR,FPR,key=Stat,value=Rate)
+
+DESeqROCdata <-  tibble(source = names(truePositivesDESeq),TPR = truePositivesDESeq / (truePositivesDESeq + falseNegativesDESeq),FPR=falsePositivesDESeq / (trueNegativesDESeq+falsePositivesDESeq),order = c(7,1,2,3,4,5,6) ) %>% arrange(order) %>% gather(TPR,FPR,key=Stat,value=Rate)
+
+BayesianTruthBayesianCompGraph <- ggplot(bayesROCdata) + geom_line(aes(x=order,y=Rate,colour=Stat)) + scale_x_continuous(breaks=1:7, labels=c("2 Rep","4 Rep","4 Rep","4 Rep","4 Rep","8 Rep","12 Rep"))+ theme(axis.text.x  = element_text(angle=90, vjust=0.5, size=16), axis.title.x = element_blank(), legend.title = element_blank()) + ylim(0,1)
+
+ggsave("~/diffExpModel/PhDBayesianWork/data/simulated/BayesianTruthBayesianCompGraph.png",BayesianTruthBayesianCompGraph,device ="png")
+
+DESeqTruthDESeqCompGraph <- ggplot(DESeqROCdata) + geom_line(aes(x=order,y=Rate,colour=Stat)) + scale_x_continuous(breaks=1:7, labels=c("2 Rep","4 Rep","4 Rep","4 Rep","4 Rep","8 Rep","12 Rep"))+ theme(axis.text.x  = element_text(angle=90, vjust=0.5, size=16), axis.title.x = element_blank(), legend.title = element_blank()) + ylim(0,1)
+
+ggsave("~/diffExpModel/PhDBayesianWork/data/simulated/DESeqTruthDESeqCompGraph.png",DESeqTruthDESeqCompGraph,device ="png")
+
+bayesianTruthDESeqCompGraph <- ggplot(ROCCompData) + geom_line(aes(x=order,y=Rate,colour=Stat)) + scale_x_continuous(breaks=1:8, labels=c("2 Rep","4 Rep","4 Rep","4 Rep","4 Rep","8 Rep","12 Rep","24 Rep"))+ theme(axis.text.x  = element_text(angle=90, vjust=0.5, size=16), axis.title.x = element_blank(), legend.title = element_blank()) + ylim(0,1)
+
+ggsave("~/diffExpModel/PhDBayesianWork/data/simulated/bayesianTruthDESeqCompGraph.png",bayesianTruthDESeqCompGraph,device ="png")
+```

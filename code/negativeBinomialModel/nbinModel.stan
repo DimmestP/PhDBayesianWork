@@ -32,7 +32,7 @@ transformed parameters {
       // centre scale factors so that they are all compariable!
       vector[K] scaleFactors;  // centered
       for (k in 1:(K-1)) {
-        scaleFactors[k] = scaleFactorsRaw[k];
+        scaleFactors [k] = scaleFactorsRaw[k];
       }
       scaleFactors[K] = -sum(scaleFactorsRaw);
 }
