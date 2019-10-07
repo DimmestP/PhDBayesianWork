@@ -18,12 +18,14 @@ MTData <- cleanMutantData %>%
   select(-transcriptName)
 chosenRNABatchSize <- 5755
 
-# Bootstrap replicate downsampling to have multiple runs of the same number of replicates
+# Bootstrap replicate downsampling to have multiple runs of  randomly choosen replicates
 chosenNumberReplicates <- c(2,4,8,12,24,48)
 
+# Empty to lists to hold vectors of the columns of downsampled replicates, dynamic because the number of replicates to downsample to changes
 WTcolNamesRep <- list()
 MTcolNamesRep <- list()
 
+# Logic to randomly select 4 different combination of replicates according the given value to downsample to
 for(i in 1:length(chosenNumberReplicates)){
   currentReplicates <- chosenNumberReplicates[i]
   if(currentReplicates != 48){
@@ -42,18 +44,18 @@ for(i in 1:length(chosenNumberReplicates)){
   }
 }
 
-for(i in 1:length(chosenNumberReplicates)){
-  for(j in 1:4){
+for(i in 1:1){
+  for(j in 1:1){
     # Once bootstrapped downsampling has been completed, run the simulation
     # Using more cores to reduce the timing!
-    stanDataCurrent <- prepareData(chosenNumberReplicates[i],WTcolNamesRep[[(((i-1) * 4) + j)]],MTcolNamesRep[[(((i-1) * 4) + j)]])
+    stanDataCurrent <- prepareData(chosenRNABatchSize,WTcolNamesRep[[(((i-1) * 4) + j)]],MTcolNamesRep[[(((i-1) * 4) + j)]])
     
     nbinlogStanFit <- stan("~/diffExpModel/PhDBayesianWork/code/negativeBinomialModel/nbinModel.stan",data = stanDataCurrent,iter = 750, chains = 16,warmup = 500)
 
     fileName <- paste0("~/diffExpModel/PhDBayesianWork/data/simulated/autoDownSample",length(WTcolNamesRep[[(((i-1) * 4) + j)]]),"Replicates",j,"iter.rds")
     currentMetaData <- read_tsv("~/diffExpModel/PhDBayesianWork/data/simulated/fourRepdownSamplednBinCompMetaData.tsv")
     metaData <- currentMetaData %>%  
-      bind_rows(tibble(file=fileName,repNo=length(WTcolNamesRep),wildRep=WTcolNamesRep,mutRep=MTcolNamesRep,maxRhat = max(summary(nbinlogStanFit)$summary[,10])))
+      bind_rows(tibble(file=fileName,repNo=length(WTcolNamesRep),wildRep=WTcolNamesRep[[(((i-1) * 4) + j)]],mutRep=MTcolNamesRep[[(((i-1) * 4) + j)]],maxRhat = max(summary(nbinlogStanFit)$summary[,10])))
     write_tsv(metaData,paste0("~/diffExpModel/PhDBayesianWork/data/simulated/fourRepdownSamplednBinCompMetaData.tsv"))
     save(nbinlogStanFit,file=fileName)
   }
