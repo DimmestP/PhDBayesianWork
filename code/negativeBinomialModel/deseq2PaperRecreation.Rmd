@@ -1,0 +1,96 @@
+---
+title: "Using the same procedures DESeq2 used to compare its analysis to other models, my Bayesian method is compare to Deseq2."
+output: html_notebook
+---
+
+# Repeat DESeq2 paper figure 6
+
+Recreate the comparison graph between different analyses given in the DESeq 2 paper, but now including my method!
+
+```{r deseq2SimulatedDataComparison}
+load("../../data/experimental/meanDispPairsPickrellEtAl.RData")
+
+library("DESeq2")
+library("tidyverse")
+
+# A function that creates transcript counts for n genes. m/2 is an integer representing the number of replicates per condition. x is a model matrix (with nCol == No of Conditions and nRow / nCol == No of reps per condition). beta is a vector of length n, each element represent the log2 fold change between the conditions (0 = no fold change). meanDispPairs is a list of the means and dispersions associated with transcripts of all genes in the human genome deduced from the Pickrell et al 2010 dataset.
+
+makeSimData <- function(n, m, x, beta, meanDispPairs, sf=rep(1,m)) {
+  idx <- sample(nrow(meanDispPairs), n, replace=TRUE)
+  mu0 <- meanDispPairs[idx,1]
+  disp <- meanDispPairs[idx,2]
+  betafull <- cbind(log2(mu0), beta)
+  mu <- 2^(betafull %*% t(x))
+  muMat <- matrix(rep(mu, times=m) * rep(sf, each=n), ncol=m)
+  list(mat = matrix(rnbinom(n*m, mu=muMat, size=1/disp), ncol=m),
+       disp = disp,
+       mu0 = mu0)
+}
+
+# function to DESeq2 analysis given the simulated datasets
+runDESeq2 <- function(e, retDDS=FALSE) {
+  dds <- DESeqDataSetFromMatrix(exprs(e), DataFrame(pData(e)), ~ condition)
+  dds <- DESeq(dds,quiet=TRUE)
+  res <- results(dds)
+  beta <- res$log2FoldChange
+  pvals <- res$pvalue
+  padj <- res$padj
+  pvals[is.na(pvals)] <- 1
+  pvals[rowSums(exprs(e)) == 0] <- NA
+  padj[is.na(padj)] <- 1
+  return(list(pvals=pvals, padj=padj, beta=beta))
+}
+
+algos <- list("DESeq2"=runDESeq2)
+namesAlgos <- names(algos)
+
+n <- 10000
+effSizeLevels <- log2(c(2,3,4)) # create multiple datasets with different magnitudes of log-fold changes between conditions
+mLevels <- c(6,8,10,20) # create multiple datasets with different numbers of replicates within conditions
+nreps <- 6 # create six different datasets for each log fold change magnitude and each replicate number (to compare consistancy)
+
+effSizes <- rep(rep(effSizeLevels, each=nreps), times=length(mLevels))
+ms <- rep(mLevels, each=nreps * length(effSizeLevels))
+
+m <- ms[i]
+es <- effSizes[i]
+condition <- factor(rep(c("A","B"), each = m/2))
+x <- model.matrix(~ condition)
+beta <- c(rep(0, n * 8/10), sample(c(-es,es), n * 2/10, TRUE))
+
+resList <- bplapply(seq_along(ms), function(i) {
+  set.seed(i)
+  m <- ms[i]
+  es <- effSizes[i]
+  condition <- factor(rep(c("A","B"), each = m/2))
+  x <- model.matrix(~ condition)
+  beta <- c(rep(0, n * 8/10), sample(c(-es,es), n * 2/10, TRUE))
+  mat <- makeSimData(n,m,x,beta,meanDispPairs)$mat
+  e <- ExpressionSet(mat, AnnotatedDataFrame(data.frame(condition)))
+  resTest <- lapply(algos, function(f) f(e))
+  nonzero <- rowSums(exprs(e)) > 0
+  sensidx <- abs(beta) > 0 & nonzero
+  sens <- sapply(resTest, function(z) mean((z$padj < .1)[sensidx]))
+  rmf <- cut(rowMeans(mat), c(0, 20, 100, 300, Inf), include.lowest=TRUE)
+  levels(rmf) <- paste0("sens",c("0to20","20to100","100to300","more300"))
+  sensStratified <- t(sapply(resTest, function(z) tapply( (z$padj < .1)[sensidx], rmf[sensidx], mean)))
+  oneminusspecpvals <- sapply(resTest, function(z) mean((z$pvals < .01)[beta == 0 & nonzero], na.rm=TRUE))
+  oneminusspecpadj <- sapply(resTest, function(z) mean((z$padj < .1)[beta == 0 & nonzero], na.rm=TRUE))
+  oneminusprec <- sapply(resTest, function(z) {
+      idx <- which(z$padj < .1)
+      ifelse(sum(idx) == 0, 0, mean((beta == 0)[idx]))
+  })
+  data.frame(sensitivity=sens,
+             sensStratified,
+             oneminusspecpvals=oneminusspecpvals,
+             oneminusspecpadj=oneminusspecpadj,
+             oneminusprec=oneminusprec,
+             algorithm=namesAlgos, effSize=es, m=m)
+})
+res <- do.call(rbind, resList)
+
+ggplot(as_tibble(res,rownames="runNumber")) + geom_point(aes(x=oneminusprec,y=sensitivity,colour=algorithm)) + facet_grid(effSize~m)
+
+
+```
+
