@@ -5,13 +5,25 @@ output: html_notebook
 
 # Repeat DESeq2 paper figure 6
 
-Recreate the comparison graph between different analyses given in the DESeq 2 paper, but now including my method!
+Recreate the comparison graph between different analyses given in the DESeq 2 paper!
 
 ```{r deseq2SimulatedDataComparison}
 load("../../data/experimental/meanDispPairsPickrellEtAl.RData")
 
-library("DESeq2")
+library("BiocParallel")
+library("rstan")
 library("tidyverse")
+library("Biobase")
+library("DESeq")
+library("DESeq2")
+library("edgeR")
+library("limma")
+library("samr")
+library("DSS")
+library("EBSeq")
+source("runDEalgorithmsScript.R")
+
+register(MulticoreParam(workers=4)) 
 
 # A function that creates transcript counts for n genes. m/2 is an integer representing the number of replicates per condition. x is a model matrix (with nCol == No of Conditions and nRow / nCol == No of reps per condition). beta is a vector of length n, each element represent the log2 fold change between the conditions (0 = no fold change). meanDispPairs is a list of the means and dispersions associated with transcripts of all genes in the human genome deduced from the Pickrell et al 2010 dataset.
 
@@ -27,36 +39,19 @@ makeSimData <- function(n, m, x, beta, meanDispPairs, sf=rep(1,m)) {
        mu0 = mu0)
 }
 
-# function to DESeq2 analysis given the simulated datasets
-runDESeq2 <- function(e, retDDS=FALSE) {
-  dds <- DESeqDataSetFromMatrix(exprs(e), DataFrame(pData(e)), ~ condition)
-  dds <- DESeq(dds,quiet=TRUE)
-  res <- results(dds)
-  beta <- res$log2FoldChange
-  pvals <- res$pvalue
-  padj <- res$padj
-  pvals[is.na(pvals)] <- 1
-  pvals[rowSums(exprs(e)) == 0] <- NA
-  padj[is.na(padj)] <- 1
-  return(list(pvals=pvals, padj=padj, beta=beta))
-}
 
-algos <- list("DESeq2"=runDESeq2)
+
+algos <- list("DESeq"=runDESeq,"DESeq2"=runDESeq2,"edgeR"=runEdgeR,"edgeR-robust"=runEdgeRRobust,
+              "DSS"=runDSS,"voom"=runVoom,"SAMseq"=runSAMseq,"EBSeq"=runEBSeq,"Bayesian"=runBayes)
 namesAlgos <- names(algos)
 
-n <- 10000
+n <- 1000
 effSizeLevels <- log2(c(2,3,4)) # create multiple datasets with different magnitudes of log-fold changes between conditions
 mLevels <- c(6,8,10,20) # create multiple datasets with different numbers of replicates within conditions
-nreps <- 6 # create six different datasets for each log fold change magnitude and each replicate number (to compare consistancy)
+nreps <- 3 # create six different datasets for each log fold change magnitude and each replicate number (to compare consistancy)
 
 effSizes <- rep(rep(effSizeLevels, each=nreps), times=length(mLevels))
 ms <- rep(mLevels, each=nreps * length(effSizeLevels))
-
-m <- ms[i]
-es <- effSizes[i]
-condition <- factor(rep(c("A","B"), each = m/2))
-x <- model.matrix(~ condition)
-beta <- c(rep(0, n * 8/10), sample(c(-es,es), n * 2/10, TRUE))
 
 resList <- bplapply(seq_along(ms), function(i) {
   set.seed(i)
@@ -91,6 +86,101 @@ res <- do.call(rbind, resList)
 
 ggplot(as_tibble(res,rownames="runNumber")) + geom_point(aes(x=oneminusprec,y=sensitivity,colour=algorithm)) + facet_grid(effSize~m)
 
+save(res, namesAlgos, file="../../data/simulated/results_simulateDE_comparison.RData")
+```
+# My model's performance
+Redo the same analysis but with my model and add it to DESeq2 graph!
+```{r}
+register(MulticoreParam(workers=16)) 
+
+source("~/diffExpModel/PhDBayesianWork/code/negativeBinomialModel/nbinDataandLibrarySetup.R")
+
+algos <- list("DESeq2"=runDESeq2,"Bayesian"=openBayes,"edgeR"=runEdgeR)
+
+cleanData <- cleanWildTypeData %>%
+  inner_join(cleanMutantData,suffix = c(".W",".M"),by = "transcriptName")
+
+WTData <- cleanData %>%
+  select(ends_with(".W"))
+MTData <- cleanData %>%
+  select(ends_with(".M"))
+
+namesAlgos <- names(algos)
+
+mLevels <- c(4,8,16,24)
+n <- 5755
+nreps <- 4
+ms <- rep(rep(mLevels, each=nreps),3)
+
+# function to sample replicates from Schurch et al dataset
+sampleExperimentalData <- function(m) {
+  WTmatrix = as.matrix(WTData[sample(colnames(WTData),m/2)])
+  MTmatrix = as.matrix(MTData[sample(colnames(MTData),m/2)])
+  colnames(WTmatrix) <- NULL
+  colnames(MTmatrix) <- NULL
+  cbind(WTmatrix,MTmatrix)
+}
+
+# use 48 rep version of bayesian model as "ground truth"
+groundBayesTruth = openBayes(ExpressionSet(matrix(nrow=5755,ncol=96),annotation=as.character(1)))
+
+# use 48 rep version of DESeq2 as "ground truth"
+groundDEseq2Truth = runDESeq2(ExpressionSet(sampleExperimentalData(96),AnnotatedDataFrame(data.frame(condition = factor(rep(c("A","B"), each = 48))))))
+
+# use 48 rep version of edgeR as "ground truth"
+groundEdgeRTruth = runEdgeR(ExpressionSet(sampleExperimentalData(96),AnnotatedDataFrame(data.frame(condition = factor(rep(c("A","B"), each = 48))))))
+
+betaBayes <- ( groundBayesTruth$beta > 0.1 & groundBayesTruth$padj < 0.00001)
+
+betaDEseq2 <- (groundDEseq2Truth$beta > 0.1 & groundDEseq2Truth$padj < 0.00001)
+
+betaEdgeR <- (groundEdgeRTruth$beta > 0.1 & groundEdgeRTruth$padj < 0.00001)
+
+experimentalDataResList <- bplapply(seq_along(ms), function(i) {
+  if(i < 17) {
+    beta = betaDEseq2
+    es = "DEseq2"
+    }
+  else if(i > 32) {
+    beta = betaBayes
+    es = "Bayes"
+    }
+  else {
+    beta = betaEdgeR
+    es = "EdgeR"
+  }
+  
+  set.seed(i)
+  m <- ms[i]
+  condition <- factor(rep(c("A","B"), each = m/2))
+  x <- model.matrix(~ condition)
+  mat <- sampleExperimentalData(m)
+  e <- ExpressionSet(mat, AnnotatedDataFrame(data.frame(condition)),annotation=as.character(i))
+  resTest <- lapply(algos, function(f) f(e))
+  nonzero <- rowSums(exprs(e)) > 0
+  
+  sensidx <- beta & nonzero
+  sens <- sapply(resTest, function(z) mean((z$padj < .1 & z$beta > 0.1)[sensidx]))
+  rmf <- cut(rowMeans(mat), c(0, 20, 100, 300, Inf), include.lowest=TRUE)
+  levels(rmf) <- paste0("sens",c("0to20","20to100","100to300","more300"))
+  sensStratified <- t(sapply(resTest, function(z) tapply( (z$padj < .1 & z$beta > 0.1)[sensidx], rmf[sensidx], mean)))
+  oneminusspecpvals <- sapply(resTest, function(z) mean((z$pvals < .01 & z$beta > 0.1)[beta == 0 & nonzero], na.rm=TRUE))
+  oneminusspecpadj <- sapply(resTest, function(z) mean((z$padj < .1 & z$beta > 0.1)[beta == 0 & nonzero], na.rm=TRUE))
+  oneminusprec <- sapply(resTest, function(z) {
+      idx <- which(z$padj < .1 & z$beta > 0.1)
+      ifelse(sum(idx) == 0, 0, mean((beta == 0)[idx]))
+  })
+  data.frame(sensitivity=sens,
+             sensStratified,
+             oneminusspecpvals=oneminusspecpvals,
+             oneminusspecpadj=oneminusspecpadj,
+             oneminusprec=oneminusprec,
+             algorithm=namesAlgos, effSize=es, m=m)
+})
+
+experimantalDataRes <- do.call(rbind, experimentalDataResList)
+
+ggplot(as_tibble(experimantalDataRes,rownames="runNumber")) + geom_point(aes(x=oneminusprec,y=sensitivity,colour=algorithm)) + facet_grid(effSize~m)
 
 ```
 
