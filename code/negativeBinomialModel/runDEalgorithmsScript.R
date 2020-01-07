@@ -219,7 +219,7 @@ openBayes <- function(e, retDDS=FALSE) {
   negBinSampleMuWild <- negBinPosteriorSample$muWild     
   negBinSampleMuMut <- negBinPosteriorSample$muMut
   
-  beta <- apply(negBinSampleMuMut,2,median)  - apply(negBinSampleMuWild,2,median) 
+  beta <- apply(negBinSampleMuMut,2,median)  - apply(negBinSampleMuWild,2,median)
   diffMeanCounts <- 2^(negBinSampleMuMut) - 2^(negBinSampleMuWild)
   pvals <- apply(diffMeanCounts, 2, function(x) 1 - abs((sum(x < 0) * 2/ 2000) - 1))
   

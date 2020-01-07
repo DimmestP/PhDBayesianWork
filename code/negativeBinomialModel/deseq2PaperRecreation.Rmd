@@ -41,8 +41,8 @@ makeSimData <- function(n, m, x, beta, meanDispPairs, sf=rep(1,m)) {
 
 
 
-algos <- list("DESeq"=runDESeq,"DESeq2"=runDESeq2,"edgeR"=runEdgeR,"edgeR-robust"=runEdgeRRobust,
-              "DSS"=runDSS,"voom"=runVoom,"SAMseq"=runSAMseq,"EBSeq"=runEBSeq,"Bayesian"=runBayes)
+algos <- list("Bayesian"=runBayes,"DESeq"=runDESeq,"DESeq2"=runDESeq2,"edgeR"=runEdgeR)#,"edgeR-robust"=runEdgeRRobust,
+              #"DSS"=runDSS,"voom"=runVoom,"SAMseq"=runSAMseq,"EBSeq"=runEBSeq)
 namesAlgos <- names(algos)
 
 n <- 1000
@@ -86,16 +86,16 @@ res <- do.call(rbind, resList)
 
 ggplot(as_tibble(res,rownames="runNumber")) + geom_point(aes(x=oneminusprec,y=sensitivity,colour=algorithm)) + facet_grid(effSize~m)
 
-save(res, namesAlgos, file="../../data/simulated/results_simulateDE_comparison.RData")
+#save(res, namesAlgos, file="../../data/simulated/results_simulateDE_comparison.RData")
 ```
 # My model's performance
 Redo the same analysis but with my model and add it to DESeq2 graph!
-```{r}
-register(MulticoreParam(workers=16)) 
+```{r,warning=FALSE}
+register(MulticoreParam(workers=32)) 
 
 source("~/diffExpModel/PhDBayesianWork/code/negativeBinomialModel/nbinDataandLibrarySetup.R")
 
-algos <- list("DESeq2"=runDESeq2,"Bayesian"=openBayes,"edgeR"=runEdgeR)
+algos <- list("DESeq2"=runDESeq2,"Bayesian"=openBayes,"voom"=runVoom)
 
 cleanData <- cleanWildTypeData %>%
   inner_join(cleanMutantData,suffix = c(".W",".M"),by = "transcriptName")
@@ -107,54 +107,63 @@ MTData <- cleanData %>%
 
 namesAlgos <- names(algos)
 
-mLevels <- c(4,8,16,24)
+mLevels <- c(4,8,16)
 n <- 5755
 nreps <- 4
 ms <- rep(rep(mLevels, each=nreps),3)
 
+# Read list of random sampled replicates used in Bayesian Analysis
+bayesianReplicateList <- read_tsv("~/diffExpModel/PhDBayesianWork/data/simulated/fourRepdownSamplednBinCompMetaData.tsv")
+
 # function to sample replicates from Schurch et al dataset
-sampleExperimentalData <- function(m) {
-  WTmatrix = as.matrix(WTData[sample(colnames(WTData),m/2)])
-  MTmatrix = as.matrix(MTData[sample(colnames(MTData),m/2)])
+sampleExperimentalData <- function(m,k,n) {
+  WTCols <- bayesianReplicateList %>%
+    filter(str_detect(file,paste0("Sample",m/2,"Replicates",(k - 1)%%4 + 1))) %>% 
+    pull(wildRep)
+  MTCols <- bayesianReplicateList %>%
+    filter(str_detect(file,paste0("Sample",m/2,"Replicates",(k - 1)%%4 + 1)))%>% 
+    pull(mutRep)
+  WTmatrix = as.matrix(WTData[1:n,WTCols])
+  MTmatrix = as.matrix(MTData[1:n,MTCols])
   colnames(WTmatrix) <- NULL
   colnames(MTmatrix) <- NULL
   cbind(WTmatrix,MTmatrix)
 }
 
 # use 48 rep version of bayesian model as "ground truth"
-groundBayesTruth = openBayes(ExpressionSet(matrix(nrow=5755,ncol=96),annotation=as.character(1)))
+groundBayesTruth = openBayes(ExpressionSet(matrix(nrow=n,ncol=32),annotation=as.character(1)))
 
 # use 48 rep version of DESeq2 as "ground truth"
-groundDEseq2Truth = runDESeq2(ExpressionSet(sampleExperimentalData(96),AnnotatedDataFrame(data.frame(condition = factor(rep(c("A","B"), each = 48))))))
+groundDEseq2Truth = runDESeq2(ExpressionSet(sampleExperimentalData(32,1,n),AnnotatedDataFrame(data.frame(condition = factor(rep(c("A","B"), each = 16))))))
 
-# use 48 rep version of edgeR as "ground truth"
-groundEdgeRTruth = runEdgeR(ExpressionSet(sampleExperimentalData(96),AnnotatedDataFrame(data.frame(condition = factor(rep(c("A","B"), each = 48))))))
+# use 48 rep version of voom as "ground truth"
+groundVoomTruth = runVoom(ExpressionSet(sampleExperimentalData(32,1,n),AnnotatedDataFrame(data.frame(condition = factor(rep(c("A","B"), each = 16))))))
 
-betaBayes <- ( groundBayesTruth$beta > 0.1 & groundBayesTruth$padj < 0.00001)
+betaBayes <- ( groundBayesTruth$beta > 0.6 & groundBayesTruth$padj < 0.00001)
 
 betaDEseq2 <- (groundDEseq2Truth$beta > 0.1 & groundDEseq2Truth$padj < 0.00001)
 
-betaEdgeR <- (groundEdgeRTruth$beta > 0.1 & groundEdgeRTruth$padj < 0.00001)
+betaVoom <- (groundVoomTruth$beta > 0.1 & groundVoomTruth$padj < 0.00001)
 
 experimentalDataResList <- bplapply(seq_along(ms), function(i) {
-  if(i < 17) {
+  if(i < 13) {
     beta = betaDEseq2
     es = "DEseq2"
     }
-  else if(i > 32) {
+  else if(i > 24) {
     beta = betaBayes
     es = "Bayes"
     }
   else {
-    beta = betaEdgeR
-    es = "EdgeR"
+    beta = betaVoom
+    es = "Voom"
   }
   
   set.seed(i)
   m <- ms[i]
   condition <- factor(rep(c("A","B"), each = m/2))
   x <- model.matrix(~ condition)
-  mat <- sampleExperimentalData(m)
+  mat <- sampleExperimentalData(m,i,n)
   e <- ExpressionSet(mat, AnnotatedDataFrame(data.frame(condition)),annotation=as.character(i))
   resTest <- lapply(algos, function(f) f(e))
   nonzero <- rowSums(exprs(e)) > 0

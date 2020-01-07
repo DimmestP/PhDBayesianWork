@@ -21,7 +21,7 @@ MTData <- cleanMutantData %>%
 chosenRNABatchSize <- 5755
 
 # Bootstrap replicate downsampling to have multiple runs of  randomly choosen replicates
-chosenNumberReplicates <- c(2,4,8,12,24,48)
+chosenNumberReplicates <- c(2,4,8,16,32,48)
 
 # Empty to lists to hold vectors of the columns of downsampled replicates, dynamic because the number of replicates to downsample to changes
 WTcolNamesRep <- list()
